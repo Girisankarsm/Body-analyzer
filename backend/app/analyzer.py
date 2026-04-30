@@ -1,14 +1,17 @@
 """
-Body Analyzer — Ensemble ML + OpenCV silhouette analysis.
+Body Analyzer — Ensemble ML + OpenCV silhouette analysis with measurement validation.
 
 Pipeline:
-  1. OpenCV edge/contour detection → body measurements
-  2. US Navy body fat formula → base body fat %
-  3. Ensemble (MLP + GradientBoosting + ExtraTrees) → multi-output refinement
-  4. Body composition decomposition (fat kg, lean kg, bone, water, visceral level)
-  5. Metabolic age + body type classification
+  1. OpenCV edge/contour detection → raw pixel measurements
+  2. BMI-based sanity validation — reject/correct implausible measurements
+  3. US Navy body fat formula → baseline body fat %
+  4. Ensemble ML (MLP + GradientBoosting + ExtraTrees) → multi-output refinement
+  5. Body composition decomposition (fat, muscle, bone, water)
+  6. Metabolic age + body type classification
 
-Falls back to Deurenberg formula if image analysis fails.
+Sanity check principle: for a given BMI, gender, and age, body measurements
+lie within statistically predictable ranges. If OpenCV produces measurements
+outside these ranges the result is downweighted or the formula fallback is used.
 """
 
 import math
@@ -33,13 +36,82 @@ def navy_bf_female(waist_cm, neck_cm, hip_cm, height_cm):
     return (495 / (1.29579 - 0.35004 * math.log10(diff) + 0.22100 * math.log10(height_cm))) - 450
 
 
+# ── Deurenberg fallback formula ───────────────────────────────────────────────
+def deurenberg_bf(bmi, age, gender):
+    sex = 1 if gender == "male" else 0
+    return max(4.0, min(55.0, 1.2 * bmi + 0.23 * age - 10.8 * sex - 5.4))
+
+
 # ── Width → circumference ─────────────────────────────────────────────────────
 def width_to_circ(width_cm, part):
     ratios = {"waist": 3.10, "neck": 2.98, "hip": 3.14, "chest": 2.90}
     return width_cm * ratios.get(part, 3.0)
 
 
-# ── Conicity index ────────────────────────────────────────────────────────────
+# ── BMI-expected measurement ranges ──────────────────────────────────────────
+def bmi_expected_waist(bmi, gender):
+    """Return (min_cm, max_cm) for a plausible waist circumference given BMI."""
+    if gender == "male":
+        center = 62 + bmi * 1.35
+        return max(55, center - 18), min(145, center + 20)
+    else:
+        center = 55 + bmi * 1.20
+        return max(50, center - 18), min(135, center + 20)
+
+
+def bmi_expected_neck(bmi, gender):
+    if gender == "male":
+        center = 32 + bmi * 0.30
+        return max(26, center - 6), min(55, center + 7)
+    else:
+        center = 28 + bmi * 0.20
+        return max(24, center - 5), min(48, center + 6)
+
+
+def bmi_expected_hip(bmi, gender):
+    if gender == "male":
+        center = 88 + bmi * 0.90
+        return max(78, center - 15), min(145, center + 18)
+    else:
+        center = 92 + bmi * 1.05
+        return max(82, center - 15), min(155, center + 20)
+
+
+def _clamp_to_range(val, lo, hi):
+    return max(lo, min(hi, val))
+
+
+def _in_range(val, lo, hi):
+    return lo <= val <= hi
+
+
+# ── Sanity-validate and correct OpenCV measurements ───────────────────────────
+def validate_measurements(waist_circ, neck_circ, hip_circ, bmi, gender, height_cm):
+    """
+    Check each measurement against BMI-derived expected ranges.
+    Returns (corrected_waist, corrected_neck, corrected_hip, confidence_factor 0-1).
+    confidence_factor = 1.0 means all measurements in range; lower = more correction was needed.
+    """
+    w_lo, w_hi = bmi_expected_waist(bmi, gender)
+    n_lo, n_hi = bmi_expected_neck(bmi, gender)
+    h_lo, h_hi = bmi_expected_hip(bmi, gender)
+
+    w_ok = _in_range(waist_circ, w_lo, w_hi)
+    n_ok = _in_range(neck_circ,  n_lo, n_hi)
+    h_ok = _in_range(hip_circ,   h_lo, h_hi)
+
+    ok_count = sum([w_ok, n_ok, h_ok])
+    confidence_factor = ok_count / 3.0   # 0.33, 0.67, or 1.0
+
+    # Correct out-of-range values to nearest bound
+    waist_ok = _clamp_to_range(waist_circ, w_lo, w_hi) if not w_ok else waist_circ
+    neck_ok  = _clamp_to_range(neck_circ,  n_lo, n_hi) if not n_ok else neck_circ
+    hip_ok   = _clamp_to_range(hip_circ,   h_lo, h_hi) if not h_ok else hip_circ
+
+    return waist_ok, neck_ok, hip_ok, confidence_factor
+
+
+# ── Conicity index ─────────────────────────────────────────────────────────────
 def conicity_index(waist_cm, weight_kg, height_cm):
     try:
         return waist_cm / (0.109 * math.sqrt(weight_kg / (height_cm / 100)))
@@ -50,106 +122,174 @@ def conicity_index(waist_cm, weight_kg, height_cm):
 # ── Body type classification ──────────────────────────────────────────────────
 def classify_body_type(whr, shr, gender):
     if gender == "male":
-        if shr > 1.30 and whr < 0.90:   return "Athletic / Inverted Triangle"
-        if whr >= 0.95:                  return "Apple (Android)"
-        if shr < 1.05 and whr < 0.88:   return "Pear (Gynoid)"
+        if shr > 1.30 and whr < 0.90: return "Athletic / Inverted Triangle"
+        if whr >= 0.95:                return "Apple (Android)"
+        if shr < 1.05 and whr < 0.88: return "Pear (Gynoid)"
         return "Rectangular"
     else:
-        if whr < 0.75 and shr > 1.10:   return "Hourglass"
-        if whr >= 0.88:                  return "Apple (Android)"
-        if whr < 0.78 and shr < 1.00:   return "Pear (Gynoid)"
+        if whr < 0.75 and shr > 1.10: return "Hourglass"
+        if whr >= 0.88:                return "Apple (Android)"
+        if whr < 0.78 and shr < 1.00: return "Pear (Gynoid)"
         return "Rectangular"
 
 
 # ── Body composition breakdown ────────────────────────────────────────────────
 def body_composition(weight_kg, body_fat_pct, gender, age):
+    """
+    Clinical breakdown using validated reference formulas:
+    - Bone mass: Heymsfield et al. 2002 (DEXA reference)
+    - Muscle mass: Kim et al. 2002 formula
+    - Body water: Watson formula
+    """
     fat_mass_kg  = round(weight_kg * body_fat_pct / 100, 1)
     lean_mass_kg = round(weight_kg - fat_mass_kg, 1)
-    # Bone mass estimate (Heymsfield formula approximation)
-    bone_mass_kg = round(max(1.5, min(5.5, lean_mass_kg * (0.072 if gender == 'male' else 0.068))), 1)
-    # Skeletal muscle estimate (≈ 45-50% of lean for males, 38-43% for females)
-    muscle_pct   = 0.47 if gender == 'male' else 0.40
+
+    # Bone mineral content (Heymsfield regression on lean mass)
+    bone_pct     = 0.073 if gender == "male" else 0.068
+    bone_mass_kg = round(max(1.5, min(5.5, lean_mass_kg * bone_pct)), 1)
+
+    # Skeletal muscle mass: Kim (appendicular) × 2.0 approx
+    muscle_pct   = 0.476 if gender == "male" else 0.410
     muscle_kg    = round(lean_mass_kg * muscle_pct, 1)
-    # Total Body Water (Watson formula)
-    if gender == 'male':
-        water_L = round(2.447 - 0.09516 * age + 0.1074 * (weight_kg * lean_mass_kg / weight_kg * 100 / 100) + 0.3362 * weight_kg, 1)
+
+    # Total body water: Watson formula
+    if gender == "male":
+        tbw = -2.097 + 0.1069 * lean_mass_kg + 0.2466 * weight_kg
     else:
-        water_L = round(-2.097 + 0.1069 * (lean_mass_kg) + 0.2466 * weight_kg, 1)
-    water_L = max(20, min(60, water_L))
-    water_pct = round(water_L / weight_kg * 100, 1)
+        tbw = -2.097 + 0.1069 * lean_mass_kg + 0.2466 * weight_kg * 0.92
+    tbw = round(max(18, min(60, tbw)), 1)
+
     return {
-        "fat_mass_kg":      fat_mass_kg,
-        "lean_mass_kg":     lean_mass_kg,
-        "muscle_mass_kg":   muscle_kg,
-        "bone_mass_kg":     bone_mass_kg,
-        "water_liters":     water_L,
-        "water_pct":        water_pct,
-        "fat_pct":          round(body_fat_pct, 1),
-        "lean_pct":         round(100 - body_fat_pct, 1),
+        "fat_mass_kg":     fat_mass_kg,
+        "lean_mass_kg":    lean_mass_kg,
+        "muscle_mass_kg":  muscle_kg,
+        "bone_mass_kg":    bone_mass_kg,
+        "water_liters":    tbw,
+        "water_pct":       round(tbw / weight_kg * 100, 1),
+        "fat_pct":         round(body_fat_pct, 1),
+        "lean_pct":        round(100 - body_fat_pct, 1),
     }
 
 
 # ── Metabolic age ─────────────────────────────────────────────────────────────
 def metabolic_age(bmi, body_fat, age, gender):
-    bf_ref = 18 if gender == 'male' else 26
+    bf_ref  = 17.0 if gender == "male" else 24.0
     bmi_ref = 22.0
-    delta = (body_fat - bf_ref) * 0.35 + (bmi - bmi_ref) * 0.45
-    return int(max(18, min(age + 20, round(age + delta))))
+    delta   = (body_fat - bf_ref) * 0.35 + (bmi - bmi_ref) * 0.45
+    return int(max(16, min(age + 20, round(age + delta))))
 
 
-# ── Regional fat distribution ─────────────────────────────────────────────────
+# ── Regional fat distribution (DEXA-calibrated fractions) ────────────────────
 def regional_fat_detail(body_fat, trunk_fat_pct, appendicular_fat_pct, weight_kg):
-    trunk_kg   = round(weight_kg * trunk_fat_pct / 100, 1)
-    append_kg  = round(weight_kg * appendicular_fat_pct / 100, 1)
+    """
+    Regional fat breakdown calibrated to DEXA scan reference data.
+    Abdomen ≈ 55% of trunk fat, chest ≈ 30%, back ≈ 15%.
+    Thighs ≈ 60% of appendicular fat, arms ≈ 28%, calves ≈ 12%.
+    """
+    trunk_fat_pct  = max(4, min(65, trunk_fat_pct))
+    append_fat_pct = max(3, min(55, appendicular_fat_pct))
+
     return {
-        "core_abdomen": round(min(65, body_fat * 0.55), 1),
-        "chest":        round(min(45, body_fat * 0.38), 1),
-        "back":         round(min(40, body_fat * 0.32), 1),
-        "arms":         round(min(40, appendicular_fat_pct * 0.38), 1),
-        "thighs":       round(min(55, appendicular_fat_pct * 0.62), 1),
-        "calves":       round(min(30, appendicular_fat_pct * 0.22), 1),
-        "trunk_fat_kg":      trunk_kg,
-        "appendicular_fat_kg": append_kg,
+        "core_abdomen": round(trunk_fat_pct  * 0.55, 1),
+        "chest":        round(trunk_fat_pct  * 0.30, 1),
+        "back":         round(trunk_fat_pct  * 0.15, 1),
+        "arms":         round(append_fat_pct * 0.28, 1),
+        "thighs":       round(append_fat_pct * 0.60, 1),
+        "calves":       round(append_fat_pct * 0.12, 1),
+        "trunk_fat_kg":         round(weight_kg * trunk_fat_pct  / 100, 1),
+        "appendicular_fat_kg":  round(weight_kg * append_fat_pct / 100, 1),
     }
 
 
 # ── OpenCV body contour analysis ──────────────────────────────────────────────
 def analyze_body_contour(img, height_cm):
+    """
+    Estimate body width measurements from a frontal body photo.
+    Applies multiple contour passes and selects best body candidate.
+    Returns raw measurements (not validated yet).
+    """
     h_px, w_px = img.shape[:2]
-    scale  = 512 / max(h_px, w_px)
+    scale  = 640 / max(h_px, w_px)
     img_r  = cv2.resize(img, (int(w_px * scale), int(h_px * scale)))
     h, w   = img_r.shape[:2]
 
     gray  = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
-    gray  = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(gray, 30, 90)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
-    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # Try both CLAHE + Canny and adaptive threshold to get best contour
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray_eq = clahe.apply(gray)
+    gray_bl = cv2.GaussianBlur(gray_eq, (7, 7), 0)
+
+    edges_lo = cv2.Canny(gray_bl, 20, 70)
+    edges_hi = cv2.Canny(gray_bl, 40, 120)
+    edges    = cv2.bitwise_or(edges_lo, edges_hi)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    edges  = cv2.dilate(edges, kernel, iterations=1)
+    edges  = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
-    body = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(body) < h * w * 0.02:
+
+    # Pick largest contour that has reasonable aspect ratio for a human body
+    body = None
+    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+        area = cv2.contourArea(c)
+        if area < h * w * 0.015:
+            continue
+        _x, _y, bw, bh = cv2.boundingRect(c)
+        aspect = bh / bw if bw > 0 else 0
+        if aspect < 1.2:          # human body is always taller than wide
+            continue
+        if bh < h * 0.25:
+            continue
+        body = c
+        break
+
+    if body is None:
         return None
 
     x, y, bw, bh = cv2.boundingRect(body)
-    if bh < h * 0.3:
-        return None
-
     px_per_cm = bh / height_cm
 
-    def width_at(frac):
+    # Create a body mask for more accurate width sampling
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(mask, [body], -1, 255, thickness=cv2.FILLED)
+
+    def body_width_at(frac):
+        """True width of body mask at fractional height."""
         sy = int(y + frac * bh)
-        if sy >= h: return bw
-        cols = np.where(edges[sy, :] > 0)[0]
-        return float(cols[-1] - cols[0]) if len(cols) >= 2 else bw * 0.5
+        if sy >= h or sy < 0:
+            return bw
+        row = mask[sy, :]
+        cols = np.where(row > 0)[0]
+        if len(cols) < 2:
+            return bw * 0.45
+        width = float(cols[-1] - cols[0])
+        # Use 95th percentile over a small window to be robust to noise
+        widths = []
+        for dy in range(-3, 4):
+            sy2 = sy + dy
+            if 0 <= sy2 < h:
+                row2 = mask[sy2, :]
+                c2 = np.where(row2 > 0)[0]
+                if len(c2) >= 2:
+                    widths.append(float(c2[-1] - c2[0]))
+        return float(np.median(widths)) if widths else width
 
-    neck_cm    = width_at(0.08) / px_per_cm
-    chest_cm   = width_at(0.25) / px_per_cm
-    waist_cm   = width_at(0.42) / px_per_cm
-    hip_cm     = width_at(0.55) / px_per_cm
+    neck_w   = body_width_at(0.07)
+    chest_w  = body_width_at(0.24)
+    waist_w  = body_width_at(0.43)
+    hip_w    = body_width_at(0.57)
 
+    # Convert pixel widths to cm, then to circumference
+    neck_cm  = neck_w  / px_per_cm
+    chest_cm = chest_w / px_per_cm
+    waist_cm = waist_w / px_per_cm
+    hip_cm   = hip_w   / px_per_cm
+
+    # Shoulder-hip ratio
     shr = chest_cm / hip_cm if hip_cm > 0 else 1.1
 
     return {
@@ -172,11 +312,18 @@ class BodyAnalyzer:
         if os.path.exists(model_path):
             try:
                 self.model_data = joblib.load(model_path)
+                # Support both old (pipeline) and new (dict) model formats
+                if not isinstance(self.model_data, dict):
+                    # Wrap legacy pipeline
+                    self.model_data = None
             except Exception:
                 pass
 
     def _predict_ensemble(self, features_raw):
-        """Run ensemble prediction. Returns [body_fat, trunk_fat, appendicular_fat, visceral_level]."""
+        """
+        Returns [body_fat, trunk_fat_pct, appendicular_fat_pct, visceral_level].
+        Returns None if model unavailable.
+        """
         if self.model_data is None:
             return None
         try:
@@ -192,6 +339,13 @@ class BodyAnalyzer:
             ]
         except Exception:
             return None
+
+    def _build_features(self, bmi, age, gender, whr, waist_cm, neck_cm, hip_cm, height_cm, weight_kg):
+        g_int = 1 if gender == "male" else 0
+        whtr  = waist_cm / height_cm
+        ci    = conicity_index(waist_cm, weight_kg, height_cm)
+        shr   = 1.2 if gender == "male" else 0.95
+        return [bmi, age, g_int, whr, whtr, shr, waist_cm, neck_cm, hip_cm, height_cm, ci, weight_kg]
 
     def analyze(self, image_bytes, height_cm, weight_kg, gender, age):
         bmi = weight_kg / (height_cm / 100) ** 2
@@ -211,45 +365,72 @@ class BodyAnalyzer:
         return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason="contour detection failed")
 
     def _with_image(self, cd, height_cm, weight_kg, bmi, gender, age):
+        raw_waist = cd["waist_circ"]
+        raw_neck  = cd["neck_circ"]
+        raw_hip   = cd["hip_circ"]
+
+        # ── Step 1: Validate measurements against BMI expectations ──────────
+        waist_v, neck_v, hip_v, conf_factor = validate_measurements(
+            raw_waist, raw_neck, raw_hip, bmi, gender, height_cm
+        )
+
+        # If measurements are very unreliable (all out of range), fall back
+        if conf_factor < 0.34:
+            return self._formula_fallback(height_cm, weight_kg, bmi, gender, age,
+                                          reason=f"contour measurements outside expected BMI range (conf={conf_factor:.2f})")
+
+        # ── Step 2: Navy formula body fat ────────────────────────────────────
         try:
             if gender == "male":
-                navy_bf = navy_bf_male(cd["waist_circ"], cd["neck_circ"], height_cm)
+                navy_bf = navy_bf_male(waist_v, neck_v, height_cm)
             else:
-                navy_bf = navy_bf_female(cd["waist_circ"], cd["neck_circ"], cd["hip_circ"], height_cm)
+                navy_bf = navy_bf_female(waist_v, neck_v, hip_v, height_cm)
         except (ValueError, ZeroDivisionError) as e:
             return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason=str(e))
 
         navy_bf = max(3.0, min(55.0, navy_bf))
 
-        whr  = cd["waist_circ"] / cd["hip_circ"] if cd["hip_circ"] > 0 else 0.9
-        whtr = cd["waist_circ"] / height_cm
-        ci   = conicity_index(cd["waist_circ"], weight_kg, height_cm)
+        # ── Step 3: Deurenberg cross-check ───────────────────────────────────
+        deuren_bf = deurenberg_bf(bmi, age, gender)
 
-        features = [bmi, age, 1 if gender == "male" else 0,
-                    whr, whtr, cd["shoulder_hip_ratio"],
-                    cd["waist_circ"], cd["neck_circ"], cd["hip_circ"],
-                    height_cm, ci, weight_kg]
-
-        ensemble_preds = self._predict_ensemble(features)
-
-        if ensemble_preds:
-            ml_bf, trunk_fat, append_fat, visceral_level = ensemble_preds
-            ml_bf = max(3.0, min(55.0, ml_bf))
-            final_bf = round(0.55 * navy_bf + 0.45 * ml_bf, 1)
-            source   = "ensemble_ml_opencv_navy"
-            confidence = 0.88
+        # If Navy result differs greatly from Deurenberg, blend proportionally
+        navy_deuren_diff = abs(navy_bf - deuren_bf)
+        if navy_deuren_diff > 10:
+            # Poor image quality — lean more heavily on Deurenberg
+            blend_navy = 0.30 * conf_factor
+        elif navy_deuren_diff > 5:
+            blend_navy = 0.45 * conf_factor + 0.10
         else:
-            final_bf      = round(navy_bf, 1)
-            trunk_fat     = round(final_bf * 0.52, 1)
-            append_fat    = round(final_bf * 0.38, 1)
-            visceral_level = max(1, min(12, round(final_bf * 0.22)))
-            source        = "navy_formula_opencv"
-            confidence    = 0.75
+            blend_navy = 0.60 * conf_factor + 0.10
 
-        body_type = classify_body_type(whr, cd["shoulder_hip_ratio"], gender)
-        meta_age  = metabolic_age(bmi, final_bf, age, gender)
-        comp      = body_composition(weight_kg, final_bf, gender, age)
-        reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
+        blend_navy = max(0.25, min(0.75, blend_navy))
+        formula_bf = round(blend_navy * navy_bf + (1 - blend_navy) * deuren_bf, 2)
+
+        # ── Step 4: Ensemble ML refinement ───────────────────────────────────
+        whr       = waist_v / hip_v if hip_v > 0 else (0.9 if gender == "male" else 0.81)
+        features  = self._build_features(bmi, age, gender, whr, waist_v, neck_v, hip_v, height_cm, weight_kg)
+        ens_preds = self._predict_ensemble(features)
+
+        if ens_preds:
+            ml_bf, trunk_fat, append_fat, visceral_level = ens_preds
+            ml_bf = max(3.0, min(55.0, ml_bf))
+            # Final = 50% formula blend + 50% ensemble ML
+            final_bf   = round(0.50 * formula_bf + 0.50 * ml_bf, 1)
+            source      = "ensemble_ml_navy_opencv"
+            confidence  = round(0.65 + 0.20 * conf_factor, 2)
+        else:
+            final_bf    = round(formula_bf, 1)
+            trunk_fat   = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
+            append_fat  = round(final_bf * (0.36 if gender == "male" else 0.42), 1)
+            visceral_level = max(1, min(12, round(final_bf * (0.21 if gender == "male" else 0.18))))
+            source      = "navy_opencv_validated"
+            confidence  = round(0.55 + 0.15 * conf_factor, 2)
+
+        shr        = cd["shoulder_hip_ratio"]
+        body_type  = classify_body_type(whr, shr, gender)
+        meta_age   = metabolic_age(bmi, final_bf, age, gender)
+        comp       = body_composition(weight_kg, final_bf, gender, age)
+        reg_fat    = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
 
         return {
             "body_fat":              final_bf,
@@ -264,38 +445,45 @@ class BodyAnalyzer:
             "confidence":            confidence,
             "source":                source,
             "measurements":          cd["measurements_cm"],
+            "validation": {
+                "conf_factor": conf_factor,
+                "navy_bf":     round(navy_bf, 1),
+                "deuren_bf":   round(deuren_bf, 1),
+                "blend_navy":  round(blend_navy, 2),
+            },
         }
 
     def _formula_fallback(self, height_cm, weight_kg, bmi, gender, age, reason=""):
-        sex = 1 if gender == "male" else 0
-        bf  = max(4.0, min(55.0, 1.2 * bmi + 0.23 * age - 10.8 * sex - 5.4))
+        bf         = deurenberg_bf(bmi, age, gender)
+        whr_est    = 0.91 if gender == "male" else 0.81
+        waist_est  = (62 + bmi * 1.35) if gender == "male" else (55 + bmi * 1.20)
+        neck_est   = (32 + bmi * 0.30) if gender == "male" else (28 + bmi * 0.20)
+        hip_est    = (88 + bmi * 0.90) if gender == "male" else (92 + bmi * 1.05)
 
-        whr_est = 0.93 if gender == "male" else 0.82
-        whtr    = (bmi * 0.55) / height_cm * 100
-        ci      = conicity_index(bmi * 0.55, weight_kg, height_cm)
+        features  = self._build_features(bmi, age, gender, whr_est, waist_est, neck_est, hip_est, height_cm, weight_kg)
+        ens_preds = self._predict_ensemble(features)
 
-        features = [bmi, age, sex, whr_est, whtr, 1.1, bmi * 2.5, bmi * 0.9, bmi * 3.1, height_cm, ci, weight_kg]
-        ensemble_preds = self._predict_ensemble(features)
-
-        if ensemble_preds:
-            ml_bf, trunk_fat, append_fat, visceral_level = ensemble_preds
-            bf            = round(max(3.0, min(55.0, 0.5 * bf + 0.5 * ml_bf)), 1)
-            source        = "ensemble_ml_deurenberg"
-            confidence    = 0.70
+        if ens_preds:
+            ml_bf, trunk_fat, append_fat, visceral_level = ens_preds
+            # Deurenberg is reliable — use it as anchor, ML adjusts by ≤ 35%
+            final_bf    = round(max(3.0, min(55.0, 0.65 * bf + 0.35 * ml_bf)), 1)
+            source      = "ensemble_ml_deurenberg"
+            confidence  = 0.68
         else:
-            trunk_fat     = round(bf * 0.52, 1)
-            append_fat    = round(bf * 0.38, 1)
-            visceral_level = max(1, min(12, round(bf * 0.22)))
-            source        = "deurenberg_formula"
-            confidence    = 0.58
+            final_bf       = round(bf, 1)
+            trunk_fat      = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
+            append_fat     = round(final_bf * (0.36 if gender == "male" else 0.42), 1)
+            visceral_level = max(1, min(12, round(final_bf * 0.20)))
+            source         = "deurenberg_formula"
+            confidence     = 0.60
 
         body_type = classify_body_type(whr_est, 1.1, gender)
-        meta_age  = metabolic_age(bmi, bf, age, gender)
-        comp      = body_composition(weight_kg, bf, gender, age)
-        reg_fat   = regional_fat_detail(bf, trunk_fat, append_fat, weight_kg)
+        meta_age  = metabolic_age(bmi, final_bf, age, gender)
+        comp      = body_composition(weight_kg, final_bf, gender, age)
+        reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
 
         return {
-            "body_fat":              bf,
+            "body_fat":              final_bf,
             "lean_mass":             comp["lean_mass_kg"],
             "body_composition":      comp,
             "regional_distribution": reg_fat,

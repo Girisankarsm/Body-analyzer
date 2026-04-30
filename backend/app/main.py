@@ -35,11 +35,12 @@ from app.train_model import train as train_model, generate_training_data
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not os.path.exists("model/bf_model.pkl"):
-        print("[startup] No model found — training now...")
+        print("[startup] No trained model found — running NHANES-calibrated ensemble training...")
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: train_model(verbose=True))
+        print("[startup] Ensemble model ready.")
     else:
-        print("[startup] Model found — ready.")
+        print("[startup] Ensemble model found — ready.")
     yield
 
 
@@ -210,7 +211,7 @@ async def train_stream(req: TrainRequest):
             "type": "complete",
             "mae": result_holder.get('mae', 0),
             "train_samples": result_holder.get('train_samples', 0),
-            "message": "Training complete. Model saved.",
+            "message": f"Ensemble ML training complete — body_fat MAE={result_holder.get('mae',0):.2f}%",
         }) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")

@@ -332,7 +332,7 @@ export default function AnalyticsPage() {
               <div>
                 <h2 className="text-white font-semibold text-sm">Regional Fat Distribution</h2>
                 <p className="text-zinc-500 text-xs mt-0.5">
-                  ML-computed via MediaPipe pose + Navy body fat formula ·{' '}
+                  Ensemble ML (MLP + GBR + ETR) · Navy formula + NHANES calibration ·{' '}
                   <span className="text-green-500">
                     {Math.round((results.mlAnalysis?.confidence ?? 0) * 100)}% confidence
                   </span>
@@ -409,7 +409,7 @@ export default function AnalyticsPage() {
               <h2 className="text-white font-bold text-lg">Deep ML Prediction Engine</h2>
             </div>
             <div className="flex items-center justify-center gap-2 mt-1">
-              <p className="text-zinc-500 text-xs">scikit-learn MLP · Navy formula dataset · 12k samples</p>
+              <p className="text-zinc-500 text-xs">Ensemble ML · NHANES-calibrated dataset · 25k samples · 4 outputs</p>
               {backendAvailable !== null && (
                 <span className={`flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded ${
                   backendAvailable
@@ -487,7 +487,7 @@ export default function AnalyticsPage() {
                   ) : (
                     <>
                       <p className="text-zinc-500">{'>'} Initializing scikit-learn MLP model...</p>
-                      <p className="text-zinc-500">{'>'} Loading Navy formula dataset (n=12,000)...</p>
+                      <p className="text-zinc-500">{'>'} Loading NHANES-calibrated dataset (n=25,000)...</p>
                       <p className="text-zinc-500">{'>'} Based on US Navy body fat estimation method</p>
                       <p className="text-zinc-500">{'>'} Beginning training — 50 epochs (128→64→32)</p>
                       {EPOCH_LOGS.slice(0, logIndex).map((log, i) => (

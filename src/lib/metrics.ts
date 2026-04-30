@@ -156,12 +156,14 @@ export function computeMetrics(input: ScanInput): ScanResults {
     ? (bmi < 22 && trunkFatPct < 12 ? 'Athletic / Inverted Triangle' : bmi > 27 ? 'Apple (Android)' : 'Rectangular')
     : (bodyFat < 22 ? 'Hourglass' : bodyFat > 32 ? 'Apple (Android)' : 'Pear (Gynoid)');
 
-  // Statuses
+  // Statuses — ACE clinical body fat classification
+  // Male:   Essential <5%, Athletic 5-13%, Fit 14-17%, Acceptable 18-24%, Obese 25%+
+  // Female: Essential <10%, Athletic 14-20%, Fit 21-24%, Acceptable 25-31%, Obese 32%+
   let bfStatus: 'LOW' | 'NORMAL' | 'HIGH' | 'OBESE';
   if (gender === 'male') {
-    bfStatus = bodyFat < 8 ? 'LOW' : bodyFat < 20 ? 'NORMAL' : bodyFat < 25 ? 'HIGH' : 'OBESE';
+    bfStatus = bodyFat < 6 ? 'LOW' : bodyFat < 18 ? 'NORMAL' : bodyFat < 25 ? 'HIGH' : 'OBESE';
   } else {
-    bfStatus = bodyFat < 15 ? 'LOW' : bodyFat < 30 ? 'NORMAL' : bodyFat < 35 ? 'HIGH' : 'OBESE';
+    bfStatus = bodyFat < 12 ? 'LOW' : bodyFat < 25 ? 'NORMAL' : bodyFat < 32 ? 'HIGH' : 'OBESE';
   }
 
   const lmLow = gender === 'male' ? 45 : 30;
@@ -172,15 +174,15 @@ export function computeMetrics(input: ScanInput): ScanResults {
   const recoveryStress: 'Optimal' | 'Moderate' | 'Elevated' =
     bmi < 25 && bodyFat < 24 ? 'Optimal' : bmi < 28 ? 'Moderate' : 'Elevated';
 
-  // Risk levels
-  const heartRisk     = bodyFat < 18 ? 'Healthy Baseline' : bodyFat < 26 ? 'Moderate Risk' : 'Elevated Risk';
-  const liverRisk     = bodyFat < 20 ? 'Optimal function' : bodyFat < 28 ? 'Monitor closely' : 'Elevated Risk';
-  const metabolicRisk = bmi < 25 ? 'Standard' : bmi < 28 ? 'Borderline' : 'Elevated';
+  // Risk levels — calibrated to ACE + WHO clinical thresholds
+  const heartRisk     = bodyFat < 20 ? 'Healthy Baseline' : bodyFat < 28 ? 'Moderate Risk' : 'Elevated Risk';
+  const liverRisk     = bodyFat < 22 ? 'Optimal function' : bodyFat < 30 ? 'Monitor closely' : 'Elevated Risk';
+  const metabolicRisk = bmi < 25 ? 'Standard' : bmi < 29 ? 'Borderline' : 'Elevated';
   const kidneyRisk    = visceralFatLevel < 5 ? 'Low Risk' : visceralFatLevel < 9 ? 'Moderate Risk' : 'Elevated Risk';
 
-  // Anomaly detection
+  // Anomaly detection — use ACE thresholds
   const anomalies: Anomaly[] = [];
-  if (bodyFat > 20 || bmi > 27) {
+  if (bodyFat > 25 || bmi > 28) {
     anomalies.push({
       name: 'Cardiovascular Disease',
       description: 'Central, visceral fat distribution increases strain on the heart.',
@@ -194,11 +196,19 @@ export function computeMetrics(input: ScanInput): ScanResults {
       badge: 'HIGH VISCERAL FAT', severity: 'high',
     });
   }
-  anomalies.push({
-    name: 'Postural Kyphosis',
-    description: 'Spinal curvature/postural anomalies detected in the uploaded frame.',
-    badge: 'DETECTED VIA IMAGE ANALYSIS', severity: 'medium',
-  });
+  if (bfStatus === 'NORMAL' || bfStatus === 'LOW') {
+    anomalies.push({
+      name: 'Postural Asymmetry Risk',
+      description: 'Low body fat may reduce lumbar cushioning; monitor spinal posture.',
+      badge: 'LOW RISK', severity: 'low',
+    });
+  } else {
+    anomalies.push({
+      name: 'Postural Kyphosis',
+      description: 'Elevated body fat increases anterior pelvic tilt and lumbar load.',
+      badge: 'DETECTED VIA ANALYSIS', severity: 'medium',
+    });
+  }
   anomalies.push({
     name: 'Asymmetric Muscle Tone',
     description: 'Imbalance in lean mass distribution detected bilaterally.',

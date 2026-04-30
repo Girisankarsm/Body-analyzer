@@ -141,14 +141,18 @@ export default function ScanPage() {
       results.bmi = parseFloat((w / (hM * hM)).toFixed(1));
       const bf  = backendData.body_fat;
 
-      if (bf < 8  && form.gender === 'male')  results.bfStatus = 'LOW';
-      else if (bf < 20 && form.gender === 'male')  results.bfStatus = 'NORMAL';
-      else if (bf < 25 && form.gender === 'male')  results.bfStatus = 'HIGH';
-      else if (form.gender === 'male')              results.bfStatus = 'OBESE';
-      else if (bf < 15)  results.bfStatus = 'LOW';
-      else if (bf < 30)  results.bfStatus = 'NORMAL';
-      else if (bf < 35)  results.bfStatus = 'HIGH';
-      else               results.bfStatus = 'OBESE';
+      // ACE body fat classification
+      if (form.gender === 'male') {
+        if      (bf < 6)  results.bfStatus = 'LOW';
+        else if (bf < 18) results.bfStatus = 'NORMAL';
+        else if (bf < 25) results.bfStatus = 'HIGH';
+        else              results.bfStatus = 'OBESE';
+      } else {
+        if      (bf < 12) results.bfStatus = 'LOW';
+        else if (bf < 25) results.bfStatus = 'NORMAL';
+        else if (bf < 32) results.bfStatus = 'HIGH';
+        else              results.bfStatus = 'OBESE';
+      }
 
       results.mlAnalysis = {
         source:                backendData.source,
