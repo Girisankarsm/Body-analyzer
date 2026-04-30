@@ -27,8 +27,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from analyzer import BodyAnalyzer
-from train_model import train as train_model, generate_training_data, navy_bf_male, navy_bf_female
+from app.analyzer import BodyAnalyzer
+from app.train_model import train as train_model, generate_training_data, navy_bf_male, navy_bf_female
 
 
 # ── Startup: auto-train if no model exists ───────────────────────────────────
@@ -240,4 +240,4 @@ async def train_sync(req: TrainRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

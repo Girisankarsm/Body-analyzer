@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Heart, Activity, Brain, RefreshCw, CheckCircle, Cpu, Wifi, WifiOff } from 'lucide-react';
-import Nav from '@/components/Nav';
+import Nav from '@/components/ui/Nav';
 import { useScan } from '@/context/ScanContext';
 import { streamTraining, checkBackend, BackendTrainEpoch } from '@/lib/backendApi';
 

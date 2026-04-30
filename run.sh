@@ -38,14 +38,14 @@ fi
 # Train model if missing
 if [ ! -f "model/bf_model.pkl" ]; then
   echo "      Training ML model (first run only, ~5s)..."
-  python train_model.py --quiet 2>/dev/null || python train_model.py
+  python -m app.train_model --quiet 2>/dev/null || python -m app.train_model
 fi
 
 # Kill any existing process on port 8000
 lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 
 # Start backend in background
-python main.py > /tmp/bodyanalyzer_backend.log 2>&1 &
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/bodyanalyzer_backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Wait for it to be ready

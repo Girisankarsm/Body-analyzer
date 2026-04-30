@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Activity, Droplets, Zap, UtensilsCrossed, Dumbbell, ChevronRight } from 'lucide-react';
-import Nav from '@/components/Nav';
+import Nav from '@/components/ui/Nav';
 import { useScan } from '@/context/ScanContext';
 
 export default function InsightsPage() {

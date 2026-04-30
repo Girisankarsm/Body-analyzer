@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 
-const BodyModel3D = dynamic(() => import('./BodyModel3D'), {
+const BodyModel3D = dynamic(() => import('@/components/3d/BodyModel3D'), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex flex-col items-center justify-center gap-3">

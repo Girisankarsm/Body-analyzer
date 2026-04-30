@@ -12,8 +12,8 @@ import {
   Tooltip,
 } from 'recharts';
 import { Download, ExternalLink, TrendingUp, Activity } from 'lucide-react';
-import Nav from '@/components/Nav';
-import BodyViewer from '@/components/BodyViewer';
+import Nav from '@/components/ui/Nav';
+import BodyViewer from '@/components/3d/BodyViewer';
 import { useScan } from '@/context/ScanContext';
 import { getModelColor } from '@/lib/metrics';
 

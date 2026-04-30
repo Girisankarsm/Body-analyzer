@@ -58,7 +58,7 @@ interface BodyViewerProps {
 }
 
 export default function BodyModel3D({ gender, color }: BodyViewerProps) {
-  const path = gender === 'male' ? '/male_body.glb' : '/womenfemale_body_base_rigged.glb';
+  const path = gender === 'male' ? '/models/male.glb' : '/models/female.glb';
 
   return (
     <Canvas
