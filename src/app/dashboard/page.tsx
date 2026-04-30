@@ -8,17 +8,76 @@ import {
   Line,
   AreaChart,
   Area,
-  PieChart,
-  Pie,
-  Cell,
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { Download, ExternalLink, TrendingUp, Activity, Zap, Droplets } from 'lucide-react';
+import { ExternalLink, TrendingUp, Activity, Zap, Droplets } from 'lucide-react';
 import Nav from '@/components/ui/Nav';
 import BodyViewer from '@/components/3d/BodyViewer';
 import { useScan } from '@/context/ScanContext';
 import { getModelColor, getVisceralRisk } from '@/lib/metrics';
+
+// ── Custom SVG donut chart (transparent background, every segment visible) ───
+function CompositionDonut({
+  segments,
+  size = 110,
+}: {
+  segments: { color: string; pct: number; label: string }[];
+  size?: number;
+}) {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R  = size * 0.42;
+  const r  = size * 0.26;
+  const strokeW = R - r;
+
+  // Build arcs from percentages
+  let cumAngle = -90; // start at top
+  const arcs = segments.map((seg) => {
+    const sweep  = (seg.pct / 100) * 360;
+    const start  = cumAngle;
+    cumAngle    += sweep;
+    return { ...seg, start, sweep };
+  });
+
+  function polarToXY(angleDeg: number, radius: number) {
+    const rad = (angleDeg * Math.PI) / 180;
+    return {
+      x: cx + radius * Math.cos(rad),
+      y: cy + radius * Math.sin(rad),
+    };
+  }
+
+  function describeArc(startDeg: number, sweepDeg: number, radius: number) {
+    if (sweepDeg >= 360) sweepDeg = 359.99;
+    const start     = polarToXY(startDeg, radius);
+    const end       = polarToXY(startDeg + sweepDeg, radius);
+    const largeArc  = sweepDeg > 180 ? 1 : 0;
+    return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+  }
+
+  const midR = r + strokeW / 2;
+
+  return (
+    <svg width={size} height={size} style={{ display: 'block', overflow: 'visible' }}>
+      {/* track */}
+      <circle cx={cx} cy={cy} r={midR} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={strokeW} />
+      {arcs.map((arc, i) => {
+        if (arc.sweep < 1) return null;
+        return (
+          <path
+            key={i}
+            d={describeArc(arc.start, arc.sweep, midR)}
+            fill="none"
+            stroke={arc.color}
+            strokeWidth={strokeW}
+            strokeLinecap="butt"
+          />
+        );
+      })}
+    </svg>
+  );
+}
 
 function ScoreCircle({ score }: { score: number }) {
   const r = 34;
@@ -162,7 +221,7 @@ export default function DashboardPage() {
             </motion.div>
           </div>
 
-          {/* Body Composition Ring + BMI */}
+          {/* Body Composition */}
           <motion.div
             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
             className="rounded-2xl p-4"
@@ -172,53 +231,59 @@ export default function DashboardPage() {
               <p className="text-[11px] text-zinc-500 uppercase tracking-widest">Body Composition</p>
               <ScoreCircle score={results.score} />
             </div>
+
+            {/* Custom donut + right panel */}
             <div className="flex items-center gap-4">
-              {/* Donut chart */}
-              <div className="flex-shrink-0 w-[110px] h-[110px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={[
-                        { name: 'Fat',    value: results.bodyComposition?.fat_pct  ?? results.bodyFat },
-                        { name: 'Muscle', value: Math.round((results.muscleMass / results.input.weight) * 100) },
-                        { name: 'Bone',   value: Math.round((results.boneMass   / results.input.weight) * 100) },
-                        { name: 'Water',  value: Math.max(0, 100 - (results.bodyComposition?.fat_pct ?? results.bodyFat) - Math.round((results.muscleMass / results.input.weight) * 100) - Math.round((results.boneMass / results.input.weight) * 100)) },
-                      ]}
-                      cx="50%" cy="50%" innerRadius={32} outerRadius={50}
-                      dataKey="value" strokeWidth={0}
-                    >
-                      <Cell fill="#f87171" />
-                      <Cell fill="#4ade80" />
-                      <Cell fill="#60a5fa" />
-                      <Cell fill="#818cf8" />
-                    </Pie>
-                    <Tooltip
-                      formatter={(v: number) => `${v.toFixed(1)}%`}
-                      contentStyle={{ background: '#111', border: '1px solid #333', borderRadius: 8, fontSize: 11 }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              {/* Legend + BMI */}
-              <div className="flex-1 min-w-0">
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 mb-3">
-                  {[
-                    { label: 'Fat',    color: '#f87171', val: `${results.bodyFat}%` },
-                    { label: 'Muscle', color: '#4ade80', val: `${results.muscleMass}kg` },
-                    { label: 'Bone',   color: '#60a5fa', val: `${results.boneMass}kg` },
-                    { label: 'Water',  color: '#818cf8', val: `${results.bodyComposition?.water_pct ?? results.waterPct}%` },
-                  ].map(({ label, color, val }) => (
-                    <div key={label} className="flex items-center gap-1.5">
-                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
-                      <span className="text-zinc-500 text-[10px]">{label}</span>
-                      <span className="text-white text-[10px] font-bold ml-auto">{val}</span>
+              {/* SVG donut — transparent, all segments guaranteed visible */}
+              {(() => {
+                const w   = results.input.weight;
+                const fat = parseFloat((results.bodyFat).toFixed(1));
+                const bc  = results.bodyComposition;
+                const mus = bc ? parseFloat(((bc.muscle_mass_kg / w) * 100).toFixed(1)) : parseFloat(((results.muscleMass / w) * 100).toFixed(1));
+                const bon = bc ? parseFloat(((bc.bone_mass_kg   / w) * 100).toFixed(1)) : parseFloat(((results.boneMass   / w) * 100).toFixed(1));
+                const wat = Math.max(1, parseFloat((100 - fat - mus - bon).toFixed(1)));
+                const segs = [
+                  { label: 'Fat',    color: '#f87171', pct: fat },
+                  { label: 'Muscle', color: '#4ade80', pct: mus },
+                  { label: 'Bone',   color: '#60a5fa', pct: Math.max(3, bon) },
+                  { label: 'Water',  color: '#818cf8', pct: wat },
+                ];
+                const total = segs.reduce((s, x) => s + x.pct, 0);
+                const norm  = segs.map(s => ({ ...s, pct: parseFloat(((s.pct / total) * 100).toFixed(1)) }));
+                return (
+                  <div className="flex-shrink-0 relative" style={{ width: 110, height: 110 }}>
+                    <CompositionDonut segments={norm} size={110} />
+                    {/* Center label */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-white text-lg font-bold metric-number leading-none">{results.bmi}</span>
+                      <span className="text-zinc-500 text-[9px] uppercase tracking-wider mt-0.5">BMI</span>
                     </div>
-                  ))}
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-white font-bold text-3xl metric-number">{results.bmi}</span>
-                  <span className="text-zinc-500 text-xs">BMI</span>
-                </div>
+                  </div>
+                );
+              })()}
+
+              {/* Legend + kg values */}
+              <div className="flex-1 min-w-0 space-y-1.5">
+                {(() => {
+                  const w  = results.input.weight;
+                  const bc = results.bodyComposition;
+                  const items = [
+                    { label: 'Fat Mass',    color: '#f87171', pct: `${results.bodyFat}%`,   kg: `${results.fatMassKg  ?? bc?.fat_mass_kg    ?? (w * results.bodyFat / 100).toFixed(1)}kg` },
+                    { label: 'Muscle',      color: '#4ade80', pct: `${bc ? ((bc.muscle_mass_kg / w) * 100).toFixed(0) : ((results.muscleMass / w) * 100).toFixed(0)}%`,  kg: `${bc?.muscle_mass_kg ?? results.muscleMass}kg` },
+                    { label: 'Bone',        color: '#60a5fa', pct: `${bc ? ((bc.bone_mass_kg   / w) * 100).toFixed(0) : ((results.boneMass   / w) * 100).toFixed(0)}%`,  kg: `${bc?.bone_mass_kg   ?? results.boneMass}kg`   },
+                    { label: 'Body Water',  color: '#818cf8', pct: `${bc?.water_pct ?? results.waterPct}%`,  kg: `${bc?.water_liters ?? (w * 0.60).toFixed(0)}L` },
+                  ];
+                  return items.map(({ label, color, pct, kg }) => (
+                    <div key={label} className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: color }} />
+                      <span className="text-zinc-500 text-[10px] w-[54px] flex-shrink-0">{label}</span>
+                      <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
+                        <div className="h-full rounded-full" style={{ width: pct, background: color, opacity: 0.8 }} />
+                      </div>
+                      <span className="text-white text-[10px] font-bold w-[30px] text-right">{kg}</span>
+                    </div>
+                  ));
+                })()}
               </div>
             </div>
           </motion.div>
