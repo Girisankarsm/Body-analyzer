@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.analyzer import BodyAnalyzer
-from app.train_model import train as train_model, generate_training_data, navy_bf_male, navy_bf_female
+from app.train_model import train as train_model, generate_training_data
 
 
 # ── Startup: auto-train if no model exists ───────────────────────────────────
@@ -65,7 +65,7 @@ class AnalyzeRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    n_samples: int = 12_000
+    n_samples: int = 20_000
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -140,18 +140,18 @@ async def train_stream(req: TrainRequest):
         def _train():
             from sklearn.neural_network import MLPRegressor
             from sklearn.preprocessing import StandardScaler
-            from sklearn.pipeline import Pipeline
             from sklearn.model_selection import train_test_split
             from sklearn.metrics import mean_absolute_error
+            from sklearn.multioutput import MultiOutputRegressor
             import joblib
 
-            X, y = generate_training_data(n=req.n_samples)
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
+            n = min(req.n_samples, 20_000)
+            X, Y = generate_training_data(n=n)
+            X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.15, random_state=42)
 
-            epochs_reported = set()
-
-            class EpochCallback:
-                pass
+            scaler = StandardScaler()
+            X_train_s = scaler.fit_transform(X_train)
+            X_test_s  = scaler.transform(X_test)
 
             mlp = MLPRegressor(
                 hidden_layer_sizes=(128, 64, 32),
@@ -162,36 +162,23 @@ async def train_stream(req: TrainRequest):
                 random_state=42,
                 learning_rate_init=0.001,
             )
+            mo = MultiOutputRegressor(mlp, n_jobs=1)
 
-            scaler = StandardScaler()
-            X_train_s = scaler.fit_transform(X_train)
-            X_test_s  = scaler.transform(X_test)
+            STEPS = 50
+            for epoch in range(1, STEPS + 1):
+                mo.fit(X_train_s, Y_train)
+                # Get average loss across outputs
+                avg_loss = float(np.mean([e.loss_ for e in mo.estimators_]))
+                logs.append({"epoch": epoch, "total": STEPS, "loss": round(avg_loss, 4)})
+                time.sleep(0.03)
 
-            prev_loss = None
-            for epoch in range(1, 51):
-                mlp.fit(X_train_s, y_train)
-                current_loss = mlp.loss_
-                logs.append({
-                    "epoch": epoch,
-                    "total": 50,
-                    "loss": round(float(current_loss), 4),
-                })
-                prev_loss = current_loss
-                time.sleep(0.04)
-
-            preds = mlp.predict(X_test_s)
-            mae   = mean_absolute_error(y_test, preds)
+            Y_pred = mo.predict(X_test_s)
+            mae_bf = float(mean_absolute_error(Y_test[:, 0], Y_pred[:, 0]))
 
             os.makedirs("model", exist_ok=True)
-            from sklearn.pipeline import Pipeline
-            pipeline = Pipeline([('scaler', scaler), ('mlp', mlp)])
-            pipeline.named_steps['mlp'].max_iter = 500
-            pipeline.named_steps['mlp'].warm_start = False
-            pipeline.fit(X_train, y_train)
+            joblib.dump({'scaler': scaler, 'model': mo, 'feature_names': ['body_fat','trunk_fat','appendicular_fat','visceral_level']}, "model/bf_model.pkl")
 
-            joblib.dump(pipeline, "model/bf_model.pkl")
-
-            result_holder['mae'] = round(float(mae), 2)
+            result_holder['mae']           = round(mae_bf, 2)
             result_holder['train_samples'] = int(len(X_train))
             done.set()
 
@@ -199,11 +186,11 @@ async def train_stream(req: TrainRequest):
         t.start()
 
         sent = 0
-        yield json.dumps({"type": "start", "message": "Initializing training data (n=12,000)..."}) + "\n"
+        yield json.dumps({"type": "start", "message": f"Generating training data (n={min(req.n_samples, 20_000)})..."}) + "\n"
         await asyncio.sleep(0.3)
-        yield json.dumps({"type": "log", "message": "Loading dataset using Navy body fat formula..."}) + "\n"
+        yield json.dumps({"type": "log", "message": "Applying Navy body fat formula + regional fat distribution..."}) + "\n"
         await asyncio.sleep(0.3)
-        yield json.dumps({"type": "log", "message": "Compiling MLP 128→64→32 neurons..."}) + "\n"
+        yield json.dumps({"type": "log", "message": "Compiling multi-output ensemble (MLP 128→64→32)..."}) + "\n"
         await asyncio.sleep(0.4)
 
         while not done.is_set() or sent < len(logs):

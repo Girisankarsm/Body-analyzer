@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import {
@@ -8,14 +8,17 @@ import {
   Line,
   AreaChart,
   Area,
+  PieChart,
+  Pie,
+  Cell,
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { Download, ExternalLink, TrendingUp, Activity } from 'lucide-react';
+import { Download, ExternalLink, TrendingUp, Activity, Zap, Droplets } from 'lucide-react';
 import Nav from '@/components/ui/Nav';
 import BodyViewer from '@/components/3d/BodyViewer';
 import { useScan } from '@/context/ScanContext';
-import { getModelColor } from '@/lib/metrics';
+import { getModelColor, getVisceralRisk } from '@/lib/metrics';
 
 function ScoreCircle({ score }: { score: number }) {
   const r = 34;
@@ -84,7 +87,7 @@ export default function DashboardPage() {
   const lmColor = lmStatusColors[results.lmStatus] ?? '#60a5fa';
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: '#0a0a0a' }}>
+    <div id="pdf-root" className="min-h-screen flex flex-col" style={{ background: '#0a0a0a' }}>
       <Nav activePage="overview" />
 
       <div className="flex flex-1 pt-[52px] overflow-hidden" style={{ height: '100vh' }}>
@@ -159,33 +162,141 @@ export default function DashboardPage() {
             </motion.div>
           </div>
 
-          {/* Estimated Metrics Overview */}
+          {/* Body Composition Ring + BMI */}
           <motion.div
             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
-            className="rounded-2xl p-5"
+            className="rounded-2xl p-4"
             style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}
           >
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-[11px] text-zinc-500 uppercase tracking-widest">Estimated Metrics Overview</p>
-              <button
-                className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-500 hover:text-white transition-colors"
-                style={{ background: 'rgba(255,255,255,0.06)' }}
-              >
-                <span className="text-xs font-bold leading-none">+</span>
-              </button>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[11px] text-zinc-500 uppercase tracking-widest">Body Composition</p>
+              <ScoreCircle score={results.score} />
             </div>
-            <div className="flex items-end justify-between gap-4">
+            <div className="flex items-center gap-4">
+              {/* Donut chart */}
+              <div className="flex-shrink-0 w-[110px] h-[110px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: 'Fat',    value: results.bodyComposition?.fat_pct  ?? results.bodyFat },
+                        { name: 'Muscle', value: Math.round((results.muscleMass / results.input.weight) * 100) },
+                        { name: 'Bone',   value: Math.round((results.boneMass   / results.input.weight) * 100) },
+                        { name: 'Water',  value: Math.max(0, 100 - (results.bodyComposition?.fat_pct ?? results.bodyFat) - Math.round((results.muscleMass / results.input.weight) * 100) - Math.round((results.boneMass / results.input.weight) * 100)) },
+                      ]}
+                      cx="50%" cy="50%" innerRadius={32} outerRadius={50}
+                      dataKey="value" strokeWidth={0}
+                    >
+                      <Cell fill="#f87171" />
+                      <Cell fill="#4ade80" />
+                      <Cell fill="#60a5fa" />
+                      <Cell fill="#818cf8" />
+                    </Pie>
+                    <Tooltip
+                      formatter={(v: number) => `${v.toFixed(1)}%`}
+                      contentStyle={{ background: '#111', border: '1px solid #333', borderRadius: 8, fontSize: 11 }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              {/* Legend + BMI */}
               <div className="flex-1 min-w-0">
-                <h2 className="text-white font-bold text-lg mb-1">Detailed Proportions</h2>
-                <p className="text-zinc-500 text-xs leading-relaxed">
-                  AI estimated anthropometric measurements based on parameters.
-                </p>
-                <div className="flex items-baseline gap-1.5 mt-4">
-                  <span className="text-white font-bold text-4xl metric-number">{results.bmi}</span>
-                  <span className="text-zinc-500 text-sm font-medium">BMI</span>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 mb-3">
+                  {[
+                    { label: 'Fat',    color: '#f87171', val: `${results.bodyFat}%` },
+                    { label: 'Muscle', color: '#4ade80', val: `${results.muscleMass}kg` },
+                    { label: 'Bone',   color: '#60a5fa', val: `${results.boneMass}kg` },
+                    { label: 'Water',  color: '#818cf8', val: `${results.bodyComposition?.water_pct ?? results.waterPct}%` },
+                  ].map(({ label, color, val }) => (
+                    <div key={label} className="flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
+                      <span className="text-zinc-500 text-[10px]">{label}</span>
+                      <span className="text-white text-[10px] font-bold ml-auto">{val}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-white font-bold text-3xl metric-number">{results.bmi}</span>
+                  <span className="text-zinc-500 text-xs">BMI</span>
                 </div>
               </div>
-              <ScoreCircle score={results.score} />
+            </div>
+          </motion.div>
+
+          {/* Visceral Fat + Metabolic Age */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.18 }}
+            className="grid grid-cols-2 gap-2"
+          >
+            {/* Visceral Fat Level */}
+            <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Visceral Fat</p>
+              <div className="flex items-end gap-1 mb-2">
+                <span className="text-white text-2xl font-bold metric-number leading-none">{results.visceralFatLevel}</span>
+                <span className="text-zinc-500 text-xs mb-0.5">/12</span>
+              </div>
+              {/* Bar gauge */}
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${(results.visceralFatLevel / 12) * 100}%`,
+                    background: getVisceralRisk(results.visceralFatLevel).color,
+                  }}
+                />
+              </div>
+              <p className="text-[10px] mt-1.5 font-medium" style={{ color: getVisceralRisk(results.visceralFatLevel).color }}>
+                {getVisceralRisk(results.visceralFatLevel).label}
+              </p>
+            </div>
+
+            {/* Metabolic Age */}
+            <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Metabolic Age</p>
+              <div className="flex items-end gap-1 mb-1">
+                <span
+                  className="text-2xl font-bold metric-number leading-none"
+                  style={{ color: results.metabolicAge > results.input.age ? '#f87171' : '#4ade80' }}
+                >
+                  {results.metabolicAge}
+                </span>
+                <span className="text-zinc-500 text-xs mb-0.5">yrs</span>
+              </div>
+              <p className="text-zinc-600 text-[10px]">Actual: {results.input.age}y</p>
+              <p className="text-[10px] mt-1.5 font-medium" style={{ color: results.metabolicAge > results.input.age ? '#f97316' : '#4ade80' }}>
+                {results.metabolicAge > results.input.age ? `+${results.metabolicAge - results.input.age}y older` : 'Younger than age'}
+              </p>
+            </div>
+          </motion.div>
+
+          {/* Fat Decomposition bar */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+            className="rounded-2xl p-4"
+            style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}
+          >
+            <p className="text-[11px] text-zinc-500 uppercase tracking-widest mb-3">Fat Decomposition</p>
+            <div className="space-y-2">
+              {[
+                { label: 'Trunk Fat',       value: results.trunkFatPct,        color: '#f87171', icon: '🫁' },
+                { label: 'Appendicular',    value: results.appendicularFatPct, color: '#fbbf24', icon: '💪' },
+                { label: 'Body Type',       value: null, text: results.bodyType, color: '#818cf8', icon: '🧬' },
+              ].map(({ label, value, text, color, icon }) => (
+                <div key={label} className="flex items-center gap-2">
+                  <span className="text-xs w-4">{icon}</span>
+                  <span className="text-zinc-500 text-[11px] w-[90px] flex-shrink-0">{label}</span>
+                  {value !== null && value !== undefined ? (
+                    <>
+                      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, value)}%`, background: color }} />
+                      </div>
+                      <span className="text-white text-[11px] font-bold w-10 text-right">{value}%</span>
+                    </>
+                  ) : (
+                    <span className="text-white text-[11px] font-semibold ml-1" style={{ color }}>{text}</span>
+                  )}
+                </div>
+              ))}
             </div>
           </motion.div>
 
@@ -245,18 +356,19 @@ export default function DashboardPage() {
           {/* Quick stats */}
           <motion.div
             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}
-            className="grid grid-cols-3 gap-2"
+            className="grid grid-cols-4 gap-2"
           >
             {[
-              { label: 'BMR', value: `${results.bmr}`, unit: 'kcal/day' },
-              { label: 'Hydration', value: `${results.hydrationTarget}`, unit: 'L/day' },
-              { label: 'Recovery', value: results.recoveryStress, unit: '' },
-            ].map(({ label, value, unit }) => (
-              <div key={label} className="rounded-xl p-3"
+              { label: 'BMR',       value: `${results.bmr}`,                               unit: 'kcal',  icon: <Zap size={10} /> },
+              { label: 'TDEE',      value: `${results.tdee ?? Math.round(results.bmr * 1.4)}`, unit: 'kcal', icon: <Activity size={10} /> },
+              { label: 'Water',     value: `${results.hydrationTarget}`,                   unit: 'L/day', icon: <Droplets size={10} /> },
+              { label: 'Recovery',  value: results.recoveryStress,                         unit: '',      icon: <TrendingUp size={10} /> },
+            ].map(({ label, value, unit, icon }) => (
+              <div key={label} className="rounded-xl p-2.5"
                 style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <p className="text-zinc-600 text-[10px] uppercase tracking-wider mb-1">{label}</p>
-                <p className="text-white text-sm font-bold metric-number leading-tight">{value}</p>
-                {unit && <p className="text-zinc-600 text-[10px] mt-0.5">{unit}</p>}
+                <div className="flex items-center gap-1 mb-1 text-zinc-600">{icon}<p className="text-[9px] uppercase tracking-wider">{label}</p></div>
+                <p className="text-white text-xs font-bold metric-number leading-tight">{value}</p>
+                {unit && <p className="text-zinc-600 text-[9px] mt-0.5">{unit}</p>}
               </div>
             ))}
           </motion.div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
 import { useScan } from '@/context/ScanContext';
@@ -12,8 +13,9 @@ interface NavProps {
 
 export default function Nav({ activePage = 'overview' }: NavProps) {
   const router = useRouter();
-  const { clearResults } = useScan();
+  const { clearResults, results } = useScan();
   const { data: session } = useSession();
+  const [exporting, setExporting] = useState(false);
 
   const handleNewScan = () => {
     clearResults();
@@ -23,6 +25,35 @@ export default function Nav({ activePage = 'overview' }: NavProps) {
   const handleSignOut = async () => {
     clearResults();
     await signOut({ callbackUrl: '/login' });
+  };
+
+  const handleExportPDF = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const html2canvas = (await import('html2canvas')).default;
+      const { jsPDF } = await import('jspdf');
+      const element = document.getElementById('pdf-root') ?? document.body;
+      const canvas  = await html2canvas(element, {
+        backgroundColor: '#0a0a0a',
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+      });
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pw = pdf.internal.pageSize.getWidth();
+      const ph = pdf.internal.pageSize.getHeight();
+      const ratio = canvas.width / canvas.height;
+      const imgW  = pw;
+      const imgH  = imgW / ratio;
+      pdf.addImage(imgData, 'JPEG', 0, 0, imgW, Math.min(imgH, ph));
+      const name = results?.input?.name ?? 'report';
+      pdf.save(`BodyAnalyzer_${name}_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (e) {
+      console.error('PDF export failed', e);
+    }
+    setExporting(false);
   };
 
   const navItems = [
@@ -75,11 +106,13 @@ export default function Nav({ activePage = 'overview' }: NavProps) {
         ))}
 
         <button
-          onClick={() => window.print()}
+          onClick={handleExportPDF}
+          disabled={exporting}
           className="nav-btn nav-btn-ghost flex items-center gap-1.5"
+          style={{ opacity: exporting ? 0.6 : 1 }}
         >
           <Download size={13} />
-          Save PDF
+          {exporting ? 'Exporting…' : 'Save PDF'}
         </button>
       </div>
 

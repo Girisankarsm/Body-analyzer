@@ -1,10 +1,14 @@
 """
-Body analyzer using OpenCV silhouette analysis:
-  1. OpenCV edge/contour detection for body measurement estimation
-  2. US Navy body fat formula for body fat percentage calculation
-  3. Trained MLP for enhanced accuracy
+Body Analyzer — Ensemble ML + OpenCV silhouette analysis.
 
-If image analysis fails for any reason, falls back to the Deurenberg formula.
+Pipeline:
+  1. OpenCV edge/contour detection → body measurements
+  2. US Navy body fat formula → base body fat %
+  3. Ensemble (MLP + GradientBoosting + ExtraTrees) → multi-output refinement
+  4. Body composition decomposition (fat kg, lean kg, bone, water, visceral level)
+  5. Metabolic age + body type classification
+
+Falls back to Deurenberg formula if image analysis fails.
 """
 
 import math
@@ -14,157 +18,189 @@ import cv2
 import joblib
 
 
-# ── US Navy body fat formula ──────────────────────────────────────────────────
-def navy_bf_male(waist_cm: float, neck_cm: float, height_cm: float) -> float:
-    """
-    US Navy formula:
-      body_fat = (495 / (1.0324 - 0.19077*log10(waist-neck) + 0.15456*log10(height))) - 450
-    """
+# ── Navy formulas ─────────────────────────────────────────────────────────────
+def navy_bf_male(waist_cm, neck_cm, height_cm):
     diff = waist_cm - neck_cm
     if diff <= 0:
-        raise ValueError("waist must be greater than neck")
+        raise ValueError("waist must be > neck")
     return (495 / (1.0324 - 0.19077 * math.log10(diff) + 0.15456 * math.log10(height_cm))) - 450
 
 
-def navy_bf_female(waist_cm: float, neck_cm: float, hip_cm: float, height_cm: float) -> float:
+def navy_bf_female(waist_cm, neck_cm, hip_cm, height_cm):
     diff = waist_cm + hip_cm - neck_cm
     if diff <= 0:
         raise ValueError("waist + hip must be > neck")
     return (495 / (1.29579 - 0.35004 * math.log10(diff) + 0.22100 * math.log10(height_cm))) - 450
 
 
-# ── Width → circumference (ellipse body model) ───────────────────────────────
-def width_to_circ(width_cm: float, part: str) -> float:
+# ── Width → circumference ─────────────────────────────────────────────────────
+def width_to_circ(width_cm, part):
     ratios = {"waist": 3.10, "neck": 2.98, "hip": 3.14, "chest": 2.90}
     return width_cm * ratios.get(part, 3.0)
 
 
-# ── Regional fat distribution ─────────────────────────────────────────────────
-def regional_fat(body_fat: float, shoulder_hip_ratio: float, gender: str) -> dict:
+# ── Conicity index ────────────────────────────────────────────────────────────
+def conicity_index(waist_cm, weight_kg, height_cm):
+    try:
+        return waist_cm / (0.109 * math.sqrt(weight_kg / (height_cm / 100)))
+    except Exception:
+        return 1.25
+
+
+# ── Body type classification ──────────────────────────────────────────────────
+def classify_body_type(whr, shr, gender):
     if gender == "male":
-        android = min(0.65, max(0.35, 0.45 + (shoulder_hip_ratio - 1.15) * 0.12))
+        if shr > 1.30 and whr < 0.90:   return "Athletic / Inverted Triangle"
+        if whr >= 0.95:                  return "Apple (Android)"
+        if shr < 1.05 and whr < 0.88:   return "Pear (Gynoid)"
+        return "Rectangular"
     else:
-        android = min(0.55, max(0.25, 0.38 + (shoulder_hip_ratio - 0.95) * 0.10))
-    gynoid = 1 - android
+        if whr < 0.75 and shr > 1.10:   return "Hourglass"
+        if whr >= 0.88:                  return "Apple (Android)"
+        if whr < 0.78 and shr < 1.00:   return "Pear (Gynoid)"
+        return "Rectangular"
+
+
+# ── Body composition breakdown ────────────────────────────────────────────────
+def body_composition(weight_kg, body_fat_pct, gender, age):
+    fat_mass_kg  = round(weight_kg * body_fat_pct / 100, 1)
+    lean_mass_kg = round(weight_kg - fat_mass_kg, 1)
+    # Bone mass estimate (Heymsfield formula approximation)
+    bone_mass_kg = round(max(1.5, min(5.5, lean_mass_kg * (0.072 if gender == 'male' else 0.068))), 1)
+    # Skeletal muscle estimate (≈ 45-50% of lean for males, 38-43% for females)
+    muscle_pct   = 0.47 if gender == 'male' else 0.40
+    muscle_kg    = round(lean_mass_kg * muscle_pct, 1)
+    # Total Body Water (Watson formula)
+    if gender == 'male':
+        water_L = round(2.447 - 0.09516 * age + 0.1074 * (weight_kg * lean_mass_kg / weight_kg * 100 / 100) + 0.3362 * weight_kg, 1)
+    else:
+        water_L = round(-2.097 + 0.1069 * (lean_mass_kg) + 0.2466 * weight_kg, 1)
+    water_L = max(20, min(60, water_L))
+    water_pct = round(water_L / weight_kg * 100, 1)
     return {
-        "core_abdomen": round(min(60, body_fat * android * 1.35), 1),
-        "chest":        round(min(45, body_fat * android * 0.82), 1),
-        "back":         round(min(40, body_fat * android * 0.72), 1),
-        "arms":         round(min(40, body_fat * gynoid * 0.75), 1),
-        "thighs":       round(min(50, body_fat * gynoid * 1.25), 1),
-        "calves":       round(min(30, body_fat * gynoid * 0.55), 1),
+        "fat_mass_kg":      fat_mass_kg,
+        "lean_mass_kg":     lean_mass_kg,
+        "muscle_mass_kg":   muscle_kg,
+        "bone_mass_kg":     bone_mass_kg,
+        "water_liters":     water_L,
+        "water_pct":        water_pct,
+        "fat_pct":          round(body_fat_pct, 1),
+        "lean_pct":         round(100 - body_fat_pct, 1),
+    }
+
+
+# ── Metabolic age ─────────────────────────────────────────────────────────────
+def metabolic_age(bmi, body_fat, age, gender):
+    bf_ref = 18 if gender == 'male' else 26
+    bmi_ref = 22.0
+    delta = (body_fat - bf_ref) * 0.35 + (bmi - bmi_ref) * 0.45
+    return int(max(18, min(age + 20, round(age + delta))))
+
+
+# ── Regional fat distribution ─────────────────────────────────────────────────
+def regional_fat_detail(body_fat, trunk_fat_pct, appendicular_fat_pct, weight_kg):
+    trunk_kg   = round(weight_kg * trunk_fat_pct / 100, 1)
+    append_kg  = round(weight_kg * appendicular_fat_pct / 100, 1)
+    return {
+        "core_abdomen": round(min(65, body_fat * 0.55), 1),
+        "chest":        round(min(45, body_fat * 0.38), 1),
+        "back":         round(min(40, body_fat * 0.32), 1),
+        "arms":         round(min(40, appendicular_fat_pct * 0.38), 1),
+        "thighs":       round(min(55, appendicular_fat_pct * 0.62), 1),
+        "calves":       round(min(30, appendicular_fat_pct * 0.22), 1),
+        "trunk_fat_kg":      trunk_kg,
+        "appendicular_fat_kg": append_kg,
     }
 
 
 # ── OpenCV body contour analysis ──────────────────────────────────────────────
-def analyze_body_contour(img: np.ndarray, height_cm: float) -> dict | None:
-    """
-    Estimate body measurements from a frontal body photo using edge detection.
-    Returns estimated measurements in cm, or None if detection fails.
-    """
+def analyze_body_contour(img, height_cm):
     h_px, w_px = img.shape[:2]
+    scale  = 512 / max(h_px, w_px)
+    img_r  = cv2.resize(img, (int(w_px * scale), int(h_px * scale)))
+    h, w   = img_r.shape[:2]
 
-    # Resize to a consistent size for analysis
-    scale_to = 512
-    scale = scale_to / max(h_px, w_px)
-    img_resized = cv2.resize(img, (int(w_px * scale), int(h_px * scale)))
-    h, w = img_resized.shape[:2]
-
-    # Convert to grayscale + denoise
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Edge detection
+    gray  = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
+    gray  = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(gray, 30, 90)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
     edges = cv2.dilate(edges, kernel, iterations=1)
 
-    # Find contours and pick the largest (body)
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
-
-    body_contour = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(body_contour)
-    if area < (h * w * 0.02):  # must cover at least 2% of image
+    body = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(body) < h * w * 0.02:
         return None
 
-    x, y, bw, bh = cv2.boundingRect(body_contour)
-    if bh < h * 0.3:  # body must span at least 30% of image height
+    x, y, bw, bh = cv2.boundingRect(body)
+    if bh < h * 0.3:
         return None
 
-    # Scale factor cm per pixel (body bounding box = full height)
     px_per_cm = bh / height_cm
 
-    # Sample horizontal widths at characteristic y-positions within bounding box
-    def width_at_frac(frac: float) -> float:
-        """Width of the contour mask at fraction `frac` from top of bounding box."""
-        sample_y = int(y + frac * bh)
-        if sample_y >= h:
-            return bw
-        row = edges[sample_y, :]
-        cols = np.where(row > 0)[0]
-        if len(cols) < 2:
-            return bw * (0.5 + frac * 0.1)
-        return float(cols[-1] - cols[0])
+    def width_at(frac):
+        sy = int(y + frac * bh)
+        if sy >= h: return bw
+        cols = np.where(edges[sy, :] > 0)[0]
+        return float(cols[-1] - cols[0]) if len(cols) >= 2 else bw * 0.5
 
-    neck_px     = width_at_frac(0.08)
-    chest_px    = width_at_frac(0.25)
-    waist_px    = width_at_frac(0.42)
-    hip_px      = width_at_frac(0.55)
-    thigh_px    = width_at_frac(0.70)
+    neck_cm    = width_at(0.08) / px_per_cm
+    chest_cm   = width_at(0.25) / px_per_cm
+    waist_cm   = width_at(0.42) / px_per_cm
+    hip_cm     = width_at(0.55) / px_per_cm
 
-    neck_cm  = neck_px  / px_per_cm
-    chest_cm = chest_px / px_per_cm
-    waist_cm = waist_px / px_per_cm
-    hip_cm   = hip_px   / px_per_cm
-
-    shoulder_hip_ratio = chest_cm / hip_cm if hip_cm > 0 else 1.1
-
-    # Convert widths → circumferences
-    neck_circ  = width_to_circ(neck_cm,  "neck")
-    waist_circ = width_to_circ(waist_cm, "waist")
-    hip_circ   = width_to_circ(hip_cm,   "hip")
+    shr = chest_cm / hip_cm if hip_cm > 0 else 1.1
 
     return {
-        "neck_circ":          neck_circ,
-        "waist_circ":         waist_circ,
-        "hip_circ":           hip_circ,
-        "shoulder_hip_ratio": shoulder_hip_ratio,
+        "neck_circ":          width_to_circ(neck_cm,  "neck"),
+        "waist_circ":         width_to_circ(waist_cm, "waist"),
+        "hip_circ":           width_to_circ(hip_cm,   "hip"),
+        "shoulder_hip_ratio": shr,
         "measurements_cm": {
-            "estimated_neck_cm":  round(neck_circ, 1),
-            "estimated_waist_cm": round(waist_circ, 1),
-            "estimated_hip_cm":   round(hip_circ, 1),
+            "estimated_neck_cm":  round(width_to_circ(neck_cm,  "neck"),  1),
+            "estimated_waist_cm": round(width_to_circ(waist_cm, "waist"), 1),
+            "estimated_hip_cm":   round(width_to_circ(hip_cm,   "hip"),   1),
         },
     }
 
 
 # ── Main Analyzer ─────────────────────────────────────────────────────────────
 class BodyAnalyzer:
-    def __init__(self, model_path: str = "model/bf_model.pkl"):
-        self.ml_model = None
+    def __init__(self, model_path="model/bf_model.pkl"):
+        self.model_data = None
         if os.path.exists(model_path):
             try:
-                self.ml_model = joblib.load(model_path)
+                self.model_data = joblib.load(model_path)
             except Exception:
                 pass
 
-    def analyze(
-        self,
-        image_bytes: bytes,
-        height_cm: float,
-        weight_kg: float,
-        gender: str,
-        age: int,
-    ) -> dict:
+    def _predict_ensemble(self, features_raw):
+        """Run ensemble prediction. Returns [body_fat, trunk_fat, appendicular_fat, visceral_level]."""
+        if self.model_data is None:
+            return None
+        try:
+            scaler = self.model_data['scaler']
+            model  = self.model_data['model']
+            X_s    = scaler.transform(np.array([features_raw], dtype=np.float32))
+            preds  = model.predict(X_s)[0]
+            return [
+                max(3.0,  min(60.0, float(preds[0]))),
+                max(4.0,  min(65.0, float(preds[1]))),
+                max(3.0,  min(55.0, float(preds[2]))),
+                max(1.0,  min(12.0, float(preds[3]))),
+            ]
+        except Exception:
+            return None
+
+    def analyze(self, image_bytes, height_cm, weight_kg, gender, age):
         bmi = weight_kg / (height_cm / 100) ** 2
 
-        # Try image-based analysis
         contour_data = None
         if image_bytes:
             try:
-                nparr = np.frombuffer(image_bytes, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                arr = np.frombuffer(image_bytes, np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is not None:
                     contour_data = analyze_body_contour(img, height_cm)
             except Exception:
@@ -172,11 +208,9 @@ class BodyAnalyzer:
 
         if contour_data:
             return self._with_image(contour_data, height_cm, weight_kg, bmi, gender, age)
-        else:
-            return self._formula_fallback(height_cm, weight_kg, bmi, gender, age,
-                                          reason="contour detection failed or no image")
+        return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason="contour detection failed")
 
-    def _with_image(self, cd: dict, height_cm, weight_kg, bmi, gender, age) -> dict:
+    def _with_image(self, cd, height_cm, weight_kg, bmi, gender, age):
         try:
             if gender == "male":
                 navy_bf = navy_bf_male(cd["waist_circ"], cd["neck_circ"], height_cm)
@@ -187,58 +221,91 @@ class BodyAnalyzer:
 
         navy_bf = max(3.0, min(55.0, navy_bf))
 
-        # Blend with MLP if available
-        final_bf = navy_bf
-        source = "navy_formula_opencv_contour"
-        if self.ml_model is not None:
-            try:
-                gender_int = 1 if gender == "male" else 0
-                features = np.array([[bmi, age, gender_int,
-                                       cd["shoulder_hip_ratio"],
-                                       cd["waist_circ"], cd["neck_circ"], height_cm]],
-                                     dtype=np.float32)
-                ml_bf = float(self.ml_model.predict(features)[0])
-                ml_bf = max(3.0, min(55.0, ml_bf))
-                final_bf = 0.60 * navy_bf + 0.40 * ml_bf
-                source = "navy_opencv_ml_blend"
-            except Exception:
-                pass
+        whr  = cd["waist_circ"] / cd["hip_circ"] if cd["hip_circ"] > 0 else 0.9
+        whtr = cd["waist_circ"] / height_cm
+        ci   = conicity_index(cd["waist_circ"], weight_kg, height_cm)
 
-        final_bf = round(final_bf, 1)
-        lean_mass = round(weight_kg * (1 - final_bf / 100), 1)
+        features = [bmi, age, 1 if gender == "male" else 0,
+                    whr, whtr, cd["shoulder_hip_ratio"],
+                    cd["waist_circ"], cd["neck_circ"], cd["hip_circ"],
+                    height_cm, ci, weight_kg]
+
+        ensemble_preds = self._predict_ensemble(features)
+
+        if ensemble_preds:
+            ml_bf, trunk_fat, append_fat, visceral_level = ensemble_preds
+            ml_bf = max(3.0, min(55.0, ml_bf))
+            final_bf = round(0.55 * navy_bf + 0.45 * ml_bf, 1)
+            source   = "ensemble_ml_opencv_navy"
+            confidence = 0.88
+        else:
+            final_bf      = round(navy_bf, 1)
+            trunk_fat     = round(final_bf * 0.52, 1)
+            append_fat    = round(final_bf * 0.38, 1)
+            visceral_level = max(1, min(12, round(final_bf * 0.22)))
+            source        = "navy_formula_opencv"
+            confidence    = 0.75
+
+        body_type = classify_body_type(whr, cd["shoulder_hip_ratio"], gender)
+        meta_age  = metabolic_age(bmi, final_bf, age, gender)
+        comp      = body_composition(weight_kg, final_bf, gender, age)
+        reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
 
         return {
             "body_fat":              final_bf,
-            "lean_mass":             lean_mass,
-            "regional_distribution": regional_fat(final_bf, cd["shoulder_hip_ratio"], gender),
-            "confidence":            0.78,
+            "lean_mass":             comp["lean_mass_kg"],
+            "body_composition":      comp,
+            "regional_distribution": reg_fat,
+            "trunk_fat_pct":         round(trunk_fat, 1),
+            "appendicular_fat_pct":  round(append_fat, 1),
+            "visceral_fat_level":    round(visceral_level, 1),
+            "metabolic_age":         meta_age,
+            "body_type":             body_type,
+            "confidence":            confidence,
             "source":                source,
             "measurements":          cd["measurements_cm"],
         }
 
-    def _formula_fallback(self, height_cm, weight_kg, bmi, gender, age, reason="") -> dict:
+    def _formula_fallback(self, height_cm, weight_kg, bmi, gender, age, reason=""):
         sex = 1 if gender == "male" else 0
-        bf = max(4.0, min(55.0, 1.2 * bmi + 0.23 * age - 10.8 * sex - 5.4))
+        bf  = max(4.0, min(55.0, 1.2 * bmi + 0.23 * age - 10.8 * sex - 5.4))
 
-        if self.ml_model is not None:
-            try:
-                gender_int = sex
-                features = np.array([[bmi, age, gender_int, 1.1,
-                                       bmi * 2.5, bmi * 0.9, height_cm]], dtype=np.float32)
-                ml_bf = float(self.ml_model.predict(features)[0])
-                bf = max(3.0, min(55.0, 0.5 * bf + 0.5 * ml_bf))
-            except Exception:
-                pass
+        whr_est = 0.93 if gender == "male" else 0.82
+        whtr    = (bmi * 0.55) / height_cm * 100
+        ci      = conicity_index(bmi * 0.55, weight_kg, height_cm)
 
-        bf = round(bf, 1)
-        lean_mass = round(weight_kg * (1 - bf / 100), 1)
+        features = [bmi, age, sex, whr_est, whtr, 1.1, bmi * 2.5, bmi * 0.9, bmi * 3.1, height_cm, ci, weight_kg]
+        ensemble_preds = self._predict_ensemble(features)
+
+        if ensemble_preds:
+            ml_bf, trunk_fat, append_fat, visceral_level = ensemble_preds
+            bf            = round(max(3.0, min(55.0, 0.5 * bf + 0.5 * ml_bf)), 1)
+            source        = "ensemble_ml_deurenberg"
+            confidence    = 0.70
+        else:
+            trunk_fat     = round(bf * 0.52, 1)
+            append_fat    = round(bf * 0.38, 1)
+            visceral_level = max(1, min(12, round(bf * 0.22)))
+            source        = "deurenberg_formula"
+            confidence    = 0.58
+
+        body_type = classify_body_type(whr_est, 1.1, gender)
+        meta_age  = metabolic_age(bmi, bf, age, gender)
+        comp      = body_composition(weight_kg, bf, gender, age)
+        reg_fat   = regional_fat_detail(bf, trunk_fat, append_fat, weight_kg)
 
         return {
             "body_fat":              bf,
-            "lean_mass":             lean_mass,
-            "regional_distribution": regional_fat(bf, 1.1, gender),
-            "confidence":            0.62,
-            "source":                "deurenberg_formula_mlp",
+            "lean_mass":             comp["lean_mass_kg"],
+            "body_composition":      comp,
+            "regional_distribution": reg_fat,
+            "trunk_fat_pct":         round(trunk_fat, 1),
+            "appendicular_fat_pct":  round(append_fat, 1),
+            "visceral_fat_level":    round(visceral_level, 1),
+            "metabolic_age":         meta_age,
+            "body_type":             body_type,
+            "confidence":            confidence,
+            "source":                source,
             "fallback_reason":       reason,
             "measurements":          {},
         }

@@ -120,34 +120,47 @@ export default function ScanPage() {
 
     // Merge ML results if available
     if (backendData) {
-      results.bodyFat = backendData.body_fat;
-      results.leanMass = backendData.lean_mass;
+      results.bodyFat              = backendData.body_fat;
+      results.leanMass             = backendData.lean_mass;
+      results.trunkFatPct          = backendData.trunk_fat_pct;
+      results.appendicularFatPct   = backendData.appendicular_fat_pct;
+      results.visceralFatLevel     = backendData.visceral_fat_level;
+      results.metabolicAge         = backendData.metabolic_age;
+      results.bodyType             = backendData.body_type;
+      if (backendData.body_composition) {
+        results.bodyComposition    = backendData.body_composition;
+        results.fatMassKg          = backendData.body_composition.fat_mass_kg;
+        results.muscleMass         = backendData.body_composition.muscle_mass_kg;
+        results.boneMass           = backendData.body_composition.bone_mass_kg;
+        results.waterPct           = backendData.body_composition.water_pct;
+      }
       setMlConfidence(backendData.confidence);
 
-      // Recompute derived metrics with ML body fat
-      const hM = parseFloat(form.height) / 100;
-      const w = parseFloat(form.weight);
+      const hM  = parseFloat(form.height) / 100;
+      const w   = parseFloat(form.weight);
       results.bmi = parseFloat((w / (hM * hM)).toFixed(1));
+      const bf  = backendData.body_fat;
 
-      const bf = backendData.body_fat;
-      const sex = form.gender === 'male' ? 1 : 0;
-      const age = parseInt(form.age);
-      const bmi = results.bmi;
-
-      if (bf < 8 && form.gender === 'male') results.bfStatus = 'LOW';
-      else if (bf < 20 && form.gender === 'male') results.bfStatus = 'NORMAL';
-      else if (bf < 25 && form.gender === 'male') results.bfStatus = 'HIGH';
-      else if (form.gender === 'male') results.bfStatus = 'OBESE';
-      else if (bf < 15) results.bfStatus = 'LOW';
-      else if (bf < 30) results.bfStatus = 'NORMAL';
-      else if (bf < 35) results.bfStatus = 'HIGH';
-      else results.bfStatus = 'OBESE';
+      if (bf < 8  && form.gender === 'male')  results.bfStatus = 'LOW';
+      else if (bf < 20 && form.gender === 'male')  results.bfStatus = 'NORMAL';
+      else if (bf < 25 && form.gender === 'male')  results.bfStatus = 'HIGH';
+      else if (form.gender === 'male')              results.bfStatus = 'OBESE';
+      else if (bf < 15)  results.bfStatus = 'LOW';
+      else if (bf < 30)  results.bfStatus = 'NORMAL';
+      else if (bf < 35)  results.bfStatus = 'HIGH';
+      else               results.bfStatus = 'OBESE';
 
       results.mlAnalysis = {
-        source: backendData.source,
-        confidence: backendData.confidence,
-        measurements: backendData.measurements,
+        source:                backendData.source,
+        confidence:            backendData.confidence,
+        measurements:          backendData.measurements,
         regional_distribution: backendData.regional_distribution,
+        body_composition:      backendData.body_composition,
+        trunk_fat_pct:         backendData.trunk_fat_pct,
+        appendicular_fat_pct:  backendData.appendicular_fat_pct,
+        visceral_fat_level:    backendData.visceral_fat_level,
+        metabolic_age:         backendData.metabolic_age,
+        body_type:             backendData.body_type,
       };
       results.regionalFat = backendData.regional_distribution;
     }
