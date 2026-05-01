@@ -41,7 +41,14 @@ frontend.log
 
 # OS
 .DS_Store
+**/.DS_Store
 Thumbs.db
+
+# Model binaries (auto-generated — run bash run.sh to create)
+backend/model/*.pkl
+# Keep .gitkeep so git tracks the model/ directory
+!backend/model/.gitkeep
+!backend/data/nhanes/.gitkeep
 
 # Editor
 .vscode/
