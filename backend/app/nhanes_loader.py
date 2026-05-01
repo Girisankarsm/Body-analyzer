@@ -21,17 +21,18 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-NHANES_BASE = "https://wwwn.cdc.gov/Nchs/Nhanes"
-CACHE_DIR   = "data/nhanes"
+NHANES_BASE_NEW = "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public"
+NHANES_BASE_OLD = "https://wwwn.cdc.gov/Nchs/Nhanes"
+CACHE_DIR       = "data/nhanes"
 
 CYCLES = [
-    ("2017-2018", "J"),
-    ("2015-2016", "I"),
-    ("2013-2014", "H"),
+    ("2017-2018", "2017", "J"),
+    ("2015-2016", "2015", "I"),
+    ("2013-2014", "2013", "H"),
 ]
 
 
-def _download_xpt(url: str, fname: str) -> pd.DataFrame | None:
+def _download_xpt(year_range: str, year: str, fname: str) -> pd.DataFrame | None:
     """Download a SAS XPT file, cache it, return as DataFrame."""
     os.makedirs(CACHE_DIR, exist_ok=True)
     path = os.path.join(CACHE_DIR, fname)
@@ -39,8 +40,24 @@ def _download_xpt(url: str, fname: str) -> pd.DataFrame | None:
     if not os.path.exists(path):
         try:
             import requests
-            resp = requests.get(url, timeout=45)
-            if resp.status_code != 200:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; NHANES-research/1.0)"}
+            # Try new URL format first, fall back to old
+            urls = [
+                f"{NHANES_BASE_NEW}/{year}/DataFiles/{fname}",
+                f"{NHANES_BASE_OLD}/{year_range}/{fname}",
+            ]
+            downloaded = False
+            for url in urls:
+                try:
+                    resp = requests.get(url, timeout=60, headers=headers)
+                    if resp.status_code == 200:
+                        with open(path, "wb") as f:
+                            f.write(resp.content)
+                        downloaded = True
+                        break
+                except Exception:
+                    continue
+            if not downloaded:
                 return None
             with open(path, "wb") as f:
                 f.write(resp.content)
@@ -55,13 +72,11 @@ def _download_xpt(url: str, fname: str) -> pd.DataFrame | None:
         return None
 
 
-def _load_cycle(year: str, suffix: str) -> pd.DataFrame | None:
+def _load_cycle(year_range: str, year: str, suffix: str) -> pd.DataFrame | None:
     """Load one NHANES cycle: merge DEMO + BMX + DXX on SEQN."""
-    base = f"{NHANES_BASE}/{year}"
-
-    demo = _download_xpt(f"{base}/DEMO_{suffix}.XPT", f"DEMO_{suffix}.XPT")
-    bmx  = _download_xpt(f"{base}/BMX_{suffix}.XPT",  f"BMX_{suffix}.XPT")
-    dxx  = _download_xpt(f"{base}/DXX_{suffix}.XPT",  f"DXX_{suffix}.XPT")
+    demo = _download_xpt(year_range, year, f"DEMO_{suffix}.XPT")
+    bmx  = _download_xpt(year_range, year, f"BMX_{suffix}.XPT")
+    dxx  = _download_xpt(year_range, year, f"DXX_{suffix}.XPT")
 
     if demo is None or bmx is None or dxx is None:
         return None
@@ -119,9 +134,9 @@ def load_nhanes(min_age: int = 16, max_age: int = 80) -> pd.DataFrame:
     Returns empty DataFrame if all downloads fail.
     """
     frames = []
-    for year, suffix in CYCLES:
-        print(f"  [NHANES] Downloading {year} cycle...", flush=True)
-        df = _load_cycle(year, suffix)
+    for year_range, year, suffix in CYCLES:
+        print(f"  [NHANES] Downloading {year_range} cycle...", flush=True)
+        df = _load_cycle(year_range, year, suffix)
         if df is not None:
             frames.append(df)
             print(f"    → {len(df):,} rows", flush=True)
@@ -135,7 +150,17 @@ def load_nhanes(min_age: int = 16, max_age: int = 80) -> pd.DataFrame:
     full = pd.concat(frames, ignore_index=True)
 
     # ── Clean ─────────────────────────────────────────────────────────────
-    full = full.dropna(subset=["body_fat_dexa", "waist_cm", "neck_cm",
+    # neck_cm may be missing in some cycles — fill with BMI-based estimate before dropping
+    if "neck_cm" not in full.columns:
+        full["neck_cm"] = np.nan
+    bmi_tmp = full["weight_kg"] / (full["height_cm"] / 100) ** 2
+    neck_missing = full["neck_cm"].isna()
+    full.loc[neck_missing & (full.get("gender_code", 1) == 1), "neck_cm"] = \
+        28 + bmi_tmp[neck_missing & (full.get("gender_code", full["gender_code"]) == 1)] * 0.55
+    full.loc[neck_missing & (full.get("gender_code", 2) == 2), "neck_cm"] = \
+        26 + bmi_tmp[neck_missing & (full.get("gender_code", full["gender_code"]) == 2)] * 0.45
+
+    full = full.dropna(subset=["body_fat_dexa", "waist_cm",
                                 "weight_kg", "height_cm", "age", "gender_code"])
     full = full[full["age"].between(min_age, max_age)]
     full = full[full["weight_kg"].between(30, 200)]
@@ -181,10 +206,19 @@ def nhanes_to_arrays(df: pd.DataFrame):
     feature_cols = ["bmi", "age", "gender_int", "whr", "whtr", "shr",
                     "waist_cm", "neck_cm", "hip_cm", "height_cm", "ci", "weight_kg"]
 
+    # Fill any remaining NaNs in features with column medians
+    df = df.copy()
+    for col in feature_cols:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = df[col].fillna(df[col].median())
+
     X = df[feature_cols].values.astype(np.float32)
 
-    body_fat  = df["body_fat_dexa"].values
-    trunk_fat = df["trunk_fat_dexa"].values
+    body_fat  = df["body_fat_dexa"].fillna(df["body_fat_dexa"].median()).values
+    trunk_fat_series = df["trunk_fat_dexa"].copy()
+    trunk_fat_series = trunk_fat_series.fillna(pd.Series(body_fat * 0.50, index=df.index))
+    trunk_fat = trunk_fat_series.values
 
     # Appendicular: rest of fat after trunk (approximate from DEXA android/gynoid model)
     append_fat = np.clip(body_fat * 0.38 + (body_fat - trunk_fat) * 0.30, 3, 55)
@@ -195,4 +229,6 @@ def nhanes_to_arrays(df: pd.DataFrame):
     visc    = np.clip((trunk_fat * 0.30) + (age_arr - 20) * 0.045 + (whr - 0.80) * 9.0, 1, 12)
 
     Y = np.column_stack([body_fat, trunk_fat, append_fat, visc]).astype(np.float32)
-    return X, Y
+    # Drop any rows that still have NaN
+    mask = np.isfinite(X).all(axis=1) & np.isfinite(Y).all(axis=1)
+    return X[mask], Y[mask]

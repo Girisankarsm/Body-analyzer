@@ -217,6 +217,75 @@ def regional_fat_detail(body_fat, trunk_fat_pct, appendicular_fat_pct, weight_kg
     }
 
 
+# ── Body morph targets + heatmap for 3D model ────────────────────────────────
+def compute_morph_targets(body_fat, bmi, gender, trunk_fat_pct, append_fat_pct,
+                          waist_cm, hip_cm, weight_kg, height_cm):
+    """
+    Compute 3D body morph scales and per-region fat heatmap intensities.
+
+    Morph targets: scale factors (1.0 = neutral) for 6 body regions.
+    Heatmap:       0.0–1.0 intensity per region (0=lean green, 1=obese red).
+    All scales are relative to a reference lean body (bf ~12% male / 20% female).
+    """
+    # Reference BMI at lean body
+    ref_bmi = 19.5 if gender == "male" else 18.5
+
+    # Overall body fullness driven by BMI
+    bmi_factor = max(0.0, min(1.0, (bmi - ref_bmi) / 20.0))
+
+    # Torso width scales with waist circumference vs lean reference
+    ref_waist = (62 + ref_bmi * 1.35) if gender == "male" else (55 + ref_bmi * 1.20)
+    torso_scale = max(0.85, min(1.55, 1.0 + (waist_cm - ref_waist) / ref_waist * 1.2))
+
+    # Hip scale
+    ref_hip = (88 + ref_bmi * 0.90) if gender == "male" else (92 + ref_bmi * 1.05)
+    hip_scale = max(0.88, min(1.50, 1.0 + (hip_cm - ref_hip) / ref_hip * 1.1))
+
+    # Arm scale from appendicular fat
+    ref_append = 8.0 if gender == "male" else 12.0
+    arm_scale  = max(0.88, min(1.45, 1.0 + (append_fat_pct - ref_append) / 40.0 * 0.6))
+
+    # Leg scale
+    leg_scale = max(0.90, min(1.45, 1.0 + (append_fat_pct - ref_append) / 40.0 * 0.5))
+
+    # Belly (abdominal protrusion) — driven by android fat
+    belly_scale = max(0.85, min(1.70, 1.0 + (trunk_fat_pct - 14.0) / 30.0 * 0.85))
+
+    # Chest scale
+    chest_scale = max(0.88, min(1.45, 1.0 + (trunk_fat_pct - 14.0) / 30.0 * 0.45))
+
+    # ── Heatmap intensities (0.0 lean → 1.0 obese) ──────────────────────────
+    def fat_to_heat(fat_pct, lean_ref, obese_ref):
+        return round(max(0.0, min(1.0, (fat_pct - lean_ref) / (obese_ref - lean_ref))), 3)
+
+    abdomen_heat = fat_to_heat(trunk_fat_pct * 0.55, 5,  25)
+    chest_heat   = fat_to_heat(trunk_fat_pct * 0.30, 3,  18)
+    back_heat    = fat_to_heat(trunk_fat_pct * 0.15, 2,  10)
+    arms_heat    = fat_to_heat(append_fat_pct * 0.28, 2, 12)
+    thighs_heat  = fat_to_heat(append_fat_pct * 0.60, 4, 20)
+    calves_heat  = fat_to_heat(append_fat_pct * 0.12, 1,  6)
+
+    return {
+        "morph_scales": {
+            "torso":  round(torso_scale, 3),
+            "belly":  round(belly_scale, 3),
+            "chest":  round(chest_scale, 3),
+            "hips":   round(hip_scale,   3),
+            "arms":   round(arm_scale,   3),
+            "legs":   round(leg_scale,   3),
+        },
+        "heatmap": {
+            "abdomen": abdomen_heat,
+            "chest":   chest_heat,
+            "back":    back_heat,
+            "arms":    arms_heat,
+            "thighs":  thighs_heat,
+            "calves":  calves_heat,
+        },
+        "overall_fatness": round(bmi_factor, 3),
+    }
+
+
 # ── MediaPipe pose-based measurement estimation ───────────────────────────────
 def analyze_body_mediapipe(img_rgb: np.ndarray, height_cm: float) -> dict | None:
     """
@@ -393,16 +462,25 @@ def analyze_body_contour(img, height_cm):
 # ── Main Analyzer ─────────────────────────────────────────────────────────────
 class BodyAnalyzer:
     def __init__(self, model_path="model/bf_model.pkl"):
-        self.model_data = None
+        self.model_data   = None
+        self.image_model  = None
+
         if os.path.exists(model_path):
             try:
                 self.model_data = joblib.load(model_path)
-                # Support both old (pipeline) and new (dict) model formats
                 if not isinstance(self.model_data, dict):
-                    # Wrap legacy pipeline
                     self.model_data = None
             except Exception:
                 pass
+
+        # Load CNN image model if available
+        try:
+            from app.image_model import ImageBodyPredictor
+            img_pred = ImageBodyPredictor()
+            if img_pred.loaded:
+                self.image_model = img_pred
+        except Exception:
+            pass
 
     def _predict_ensemble(self, features_raw):
         """
@@ -514,10 +592,10 @@ class BodyAnalyzer:
                 pass
 
         if pose_data:
-            return self._with_image(pose_data, height_cm, weight_kg, bmi, gender, age)
+            return self._with_image(pose_data, height_cm, weight_kg, bmi, gender, age, image_bytes=image_bytes)
         return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason="image analysis failed")
 
-    def _with_image(self, cd, height_cm, weight_kg, bmi, gender, age):
+    def _with_image(self, cd, height_cm, weight_kg, bmi, gender, age, image_bytes=None):
         raw_waist = cd["waist_circ"]
         raw_neck  = cd["neck_circ"]
         raw_hip   = cd["hip_circ"]
@@ -546,17 +624,19 @@ class BodyAnalyzer:
         # ── Step 3: Deurenberg cross-check ───────────────────────────────────
         deuren_bf = deurenberg_bf(bmi, age, gender)
 
-        # If Navy result differs greatly from Deurenberg, blend proportionally
+        # If Navy result differs greatly from Deurenberg, strongly prefer Deurenberg.
+        # For lean people (BMI < 22) OpenCV often overestimates waist — Deurenberg
+        # anchored on BMI/age is far more reliable in that case.
         navy_deuren_diff = abs(navy_bf - deuren_bf)
+        lean_penalty = max(0.0, (22.0 - bmi) / 10.0)   # 0 at BMI≥22, up to 1.0 at BMI≤12
         if navy_deuren_diff > 10:
-            # Poor image quality — lean more heavily on Deurenberg
-            blend_navy = 0.30 * conf_factor
+            blend_navy = max(0.05, 0.25 * conf_factor - lean_penalty * 0.15)
         elif navy_deuren_diff > 5:
-            blend_navy = 0.45 * conf_factor + 0.10
+            blend_navy = max(0.10, 0.40 * conf_factor - lean_penalty * 0.10)
         else:
-            blend_navy = 0.60 * conf_factor + 0.10
+            blend_navy = max(0.20, 0.60 * conf_factor - lean_penalty * 0.05)
 
-        blend_navy = max(0.25, min(0.75, blend_navy))
+        blend_navy = max(0.05, min(0.70, blend_navy))
         formula_bf = round(blend_navy * navy_bf + (1 - blend_navy) * deuren_bf, 2)
 
         # ── Step 4: Ensemble ML refinement ───────────────────────────────────
@@ -567,13 +647,28 @@ class BodyAnalyzer:
         ens_preds, ci_stds = self._predict_with_uncertainty(features)
         method_used = cd.get("method", "opencv")
 
+        # ── CNN image model prediction (if available) ────────────────────
+        cnn_bf = None
+        if self.image_model is not None and image_bytes:
+            try:
+                cnn_bf = self.image_model.predict(image_bytes)
+            except Exception:
+                cnn_bf = None
+
         if ens_preds:
             ml_bf, trunk_fat, append_fat, visceral_level = ens_preds
-            ml_bf    = max(3.0, min(55.0, ml_bf))
-            final_bf = round(0.50 * formula_bf + 0.50 * ml_bf, 1)
-            source   = f"ensemble_ml_navy_{method_used}"
-            confidence = round(0.65 + 0.20 * conf_factor, 2)
-            bf_std   = float(ci_stds[0]) if ci_stds else 1.5
+            ml_bf = max(3.0, min(55.0, ml_bf))
+            if cnn_bf is not None:
+                # 3-way blend: 35% formula + 35% tabular ML + 30% CNN
+                final_bf   = round(0.35 * formula_bf + 0.35 * ml_bf + 0.30 * cnn_bf, 1)
+                source     = f"cnn_ensemble_navy_{method_used}"
+                confidence = round(0.75 + 0.15 * conf_factor, 2)
+                bf_std     = float(ci_stds[0]) * 0.85 if ci_stds else 1.2
+            else:
+                final_bf   = round(0.50 * formula_bf + 0.50 * ml_bf, 1)
+                source     = f"ensemble_ml_navy_{method_used}"
+                confidence = round(0.65 + 0.20 * conf_factor, 2)
+                bf_std     = float(ci_stds[0]) if ci_stds else 1.5
         else:
             final_bf       = round(formula_bf, 1)
             trunk_fat      = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
@@ -583,16 +678,49 @@ class BodyAnalyzer:
             confidence     = round(0.55 + 0.15 * conf_factor, 2)
             bf_std         = 2.0
 
+        # ── BMI-based reality check on final_bf and visceral fat ─────────────
+        # Deurenberg is the most reliable anchor for lean individuals.
+        # If final_bf is still far above Deurenberg for a lean BMI, pull it back.
+        if bmi < 23 and final_bf > deuren_bf + 6:
+            final_bf = round(deuren_bf + (final_bf - deuren_bf) * 0.25, 1)
+
+        # Visceral fat hard cap by BMI — scientifically impossible to be high
+        # when BMI is in the healthy/lean range.
+        # DEXA reference: BMI<22 → visc rarely exceeds 4; BMI<25 → rarely exceeds 7
+        bmi_visc_max = round(max(1.0, min(12.0, (bmi - 10.0) * 0.55)), 1)
+        visceral_level = min(visceral_level, bmi_visc_max)
+        # Also derive trunk/appendicular from final_bf if ML gave outlier values
+        if trunk_fat > final_bf * 0.75:
+            trunk_fat  = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
+        if append_fat > final_bf * 0.65:
+            append_fat = round(final_bf * (0.36 if gender == "male" else 0.42), 1)
+
         # 95% confidence interval: ±1.96 × std
         ci_95_low  = round(max(3.0,  final_bf - 1.96 * bf_std), 1)
         ci_95_high = round(min(65.0, final_bf + 1.96 * bf_std), 1)
 
-        shr       = cd["shoulder_hip_ratio"]
-        body_type = classify_body_type(whr, shr, gender)
+        shr = cd["shoulder_hip_ratio"]
+
+        # When measurements are unreliable (esp. for lean BMI), use BMI-derived
+        # waist/hip for body-type classification so we don't get false "Apple".
+        if conf_factor < 0.67 or (bmi < 23 and whr > 1.0):
+            waist_ref = (62 + bmi * 1.35) if gender == "male" else (55 + bmi * 1.20)
+            hip_ref   = (88 + bmi * 0.90) if gender == "male" else (92 + bmi * 1.05)
+            whr_safe  = round(waist_ref / hip_ref, 3)
+        else:
+            whr_safe = whr
+
+        body_type = classify_body_type(whr_safe, shr, gender)
         meta_age  = metabolic_age(bmi, final_bf, age, gender)
         comp      = body_composition(weight_kg, final_bf, gender, age)
         reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
         model_inf = self._model_info()
+        morph     = compute_morph_targets(
+            final_bf, bmi, gender, trunk_fat, append_fat,
+            cd["measurements_cm"].get("estimated_waist_cm", 62 + bmi * 1.35),
+            cd["measurements_cm"].get("estimated_hip_cm",   88 + bmi * 0.9),
+            weight_kg, height_cm,
+        )
 
         return {
             "body_fat":              final_bf,
@@ -613,6 +741,7 @@ class BodyAnalyzer:
             "model_info":            model_inf,
             "source":                source,
             "measurements":          cd["measurements_cm"],
+            "morph_targets":         morph,
         }
 
     def _formula_fallback(self, height_cm, weight_kg, bmi, gender, age, reason=""):
@@ -639,11 +768,19 @@ class BodyAnalyzer:
             source         = "deurenberg_formula"
             confidence     = 0.60
 
+        # BMI-based visceral fat cap (same logic as _with_image)
+        bmi_visc_max   = round(max(1.0, min(12.0, (bmi - 10.0) * 0.55)), 1)
+        visceral_level = min(visceral_level, bmi_visc_max)
+
         body_type = classify_body_type(whr_est, 1.1, gender)
         meta_age  = metabolic_age(bmi, final_bf, age, gender)
         comp      = body_composition(weight_kg, final_bf, gender, age)
         reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
         model_inf = self._model_info()
+        morph     = compute_morph_targets(
+            final_bf, bmi, gender, trunk_fat, append_fat,
+            waist_est, hip_est, weight_kg, height_cm,
+        )
 
         bf_std     = 2.5  # formula-only is less precise
         ci_95_low  = round(max(3.0,  final_bf - 1.96 * bf_std), 1)
@@ -669,4 +806,5 @@ class BodyAnalyzer:
             "source":                source,
             "fallback_reason":       reason,
             "measurements":          {},
+            "morph_targets":         morph,
         }

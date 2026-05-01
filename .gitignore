@@ -16,7 +16,9 @@ build/
 # Python
 backend/venv/
 backend/__pycache__/
-backend/model/bf_model.pkl
+backend/model/
+backend/data/nhanes/*.XPT
+backend/data/nhanes/*.xpt
 __pycache__/
 *.py[cod]
 *.pyo

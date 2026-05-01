@@ -34,13 +34,29 @@ from app.train_model import train as train_model, generate_training_data
 # ── Startup: auto-train if no model exists ───────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    loop = asyncio.get_event_loop()
+
+    # Train tabular ensemble if not present
     if not os.path.exists("model/bf_model.pkl"):
-        print("[startup] No trained model found — running NHANES-calibrated ensemble training...")
-        loop = asyncio.get_event_loop()
+        print("[startup] No ensemble model — training NHANES-calibrated model...")
         await loop.run_in_executor(None, lambda: train_model(verbose=True))
         print("[startup] Ensemble model ready.")
     else:
         print("[startup] Ensemble model found — ready.")
+
+    # Train CNN image model if not present (non-blocking, background)
+    if not os.path.exists("model/image_model.pkl"):
+        print("[startup] No image model — training CNN image model in background...")
+        async def _train_image():
+            try:
+                from app.image_model import download_and_train
+                await loop.run_in_executor(None, lambda: download_and_train(verbose=True))
+                print("[startup] CNN image model ready.")
+            except Exception as e:
+                print(f"[startup] CNN image model skipped: {e}")
+        asyncio.create_task(_train_image())
+    else:
+        print("[startup] CNN image model found — ready.")
     yield
 
 

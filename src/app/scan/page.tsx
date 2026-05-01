@@ -126,6 +126,7 @@ export default function ScanPage() {
       results.appendicularFatPct   = backendData.appendicular_fat_pct;
       results.visceralFatLevel     = backendData.visceral_fat_level;
       results.metabolicAge         = backendData.metabolic_age;
+      results.biologicalAge        = backendData.metabolic_age;
       results.bodyType             = backendData.body_type;
       if (backendData.body_composition) {
         results.bodyComposition    = backendData.body_composition;
@@ -179,6 +180,9 @@ export default function ScanPage() {
         body_type:             backendData.body_type,
       };
       results.regionalFat = backendData.regional_distribution;
+      if (backendData.morph_targets) {
+        results.morphTargets = backendData.morph_targets;
+      }
     }
 
     setResults(results);

@@ -55,6 +55,25 @@ export interface BackendAnalysisResult {
     trunk_fat_kg?: number;
     appendicular_fat_kg?: number;
   };
+  morph_targets?: {
+    morph_scales: {
+      torso: number;
+      belly: number;
+      chest: number;
+      hips:  number;
+      arms:  number;
+      legs:  number;
+    };
+    heatmap: {
+      abdomen: number;
+      chest:   number;
+      back:    number;
+      arms:    number;
+      thighs:  number;
+      calves:  number;
+    };
+    overall_fatness: number;
+  };
 }
 
 export interface BackendTrainEpoch {

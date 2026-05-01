@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import {
@@ -130,6 +130,8 @@ export default function DashboardPage() {
   // Show loader while context is hydrating
   if (!isHydrated) return <LoadingScreen />;
   if (!results) return <LoadingScreen />;
+
+  const [heatmapMode, setHeatmapMode] = useState(false);
 
   const modelColor = getModelColor(results.bfStatus);
   const sparkData = results.sparklineData.map((v, i) => ({ i, v }));
@@ -468,6 +470,9 @@ export default function DashboardPage() {
                   CV-MAE={Number(results.modelCvMae).toFixed(2)}%
                 </span>
               )}
+              {results.mlAnalysis?.source?.includes("cnn") && (
+                <span className="text-purple-400 text-[10px] font-medium">CNN active</span>
+              )}
               {results.modelDataSource && (
                 <span className="text-green-600 text-[10px]">
                   {results.modelDataSource.includes("nhanes_real") ? "NHANES real data" : "synthetic"}
@@ -480,20 +485,42 @@ export default function DashboardPage() {
         {/* ── Right: 3D Model ─────────────────────────────────── */}
         <div className="flex-1 relative" style={{ height: 'calc(100vh - 52px)' }}>
           <div className="absolute inset-0">
-            <BodyViewer gender={results.input.gender} color={modelColor} />
+            <BodyViewer
+              gender={results.input.gender}
+              color={modelColor}
+              morph={results.morphTargets}
+              heatmapMode={heatmapMode}
+            />
           </div>
 
-          {/* Heatmap legend */}
+          {/* Heatmap toggle + legend */}
           <div
             className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-4 px-4 py-2 rounded-full"
             style={{
-              background: 'rgba(0,0,0,0.65)',
+              background: 'rgba(0,0,0,0.70)',
               border: '1px solid rgba(255,255,255,0.08)',
               backdropFilter: 'blur(12px)',
               whiteSpace: 'nowrap',
             }}
           >
-            <p className="text-zinc-500 text-xs">Heatmap Status:</p>
+            {/* Toggle button */}
+            <button
+              onClick={() => setHeatmapMode(h => !h)}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold transition-all"
+              style={{
+                background: heatmapMode
+                  ? 'linear-gradient(90deg,rgba(239,68,68,0.22),rgba(251,191,36,0.18))'
+                  : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${heatmapMode ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.12)'}`,
+                color: heatmapMode ? '#fca5a5' : '#a1a1aa',
+              }}
+            >
+              <span style={{ fontSize: 9 }}>●</span>
+              {heatmapMode ? 'Fat Map ON' : 'Fat Map OFF'}
+            </button>
+
+            <div className="w-px h-4 bg-zinc-700" />
+
             {[
               { label: 'Lean', color: '#4ade80' },
               { label: 'Normal', color: '#fbbf24' },

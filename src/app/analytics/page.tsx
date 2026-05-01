@@ -190,7 +190,9 @@ export default function AnalyticsPage() {
     };
   };
 
-  const bioDiff = results.input.age - results.biologicalAge;
+  // Use metabolicAge as the single source of truth (biologicalAge is synced to it after a scan)
+  const bioAge  = results.metabolicAge ?? results.biologicalAge;
+  const bioDiff = results.input.age - bioAge;
 
   return (
     <div className="min-h-screen" style={{ background: '#0a0a0a' }}>
@@ -409,7 +411,6 @@ export default function AnalyticsPage() {
               <h2 className="text-white font-bold text-lg">Deep ML Prediction Engine</h2>
             </div>
             <div className="flex items-center justify-center gap-2 mt-1">
-              <p className="text-zinc-500 text-xs">Ensemble ML · NHANES-calibrated dataset · 25k samples · 4 outputs</p>
               {backendAvailable !== null && (
                 <span className={`flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded ${
                   backendAvailable
@@ -470,7 +471,7 @@ export default function AnalyticsPage() {
                         <>
                           <p className="text-green-400">{'>'} Running biological age inference...</p>
                           <p className="text-white font-bold">
-                            {'>'} Prediction locked: Biological Age = {results.biologicalAge} yrs
+                            {'>'} Prediction locked: Biological Age = {bioAge} yrs
                             {trainMAE !== null && ` (MAE: ${trainMAE}%)`}
                           </p>
                         </>
@@ -500,7 +501,7 @@ export default function AnalyticsPage() {
                           <p className="text-green-400">{'>'} Training complete. Model weights optimized.</p>
                           <p className="text-green-400">{'>'} Running inference on personalized parameters...</p>
                           <p className="text-white font-bold">
-                            {'>'} Prediction locked: Biological Age is {results.biologicalAge} years.
+                            {'>'} Prediction locked: Biological Age is {bioAge} years.
                           </p>
                         </>
                       )}
@@ -585,7 +586,7 @@ export default function AnalyticsPage() {
                             color: '#818cf8',
                           }}
                         >
-                          {results.biologicalAge}
+                          {bioAge}
                         </div>
                       </div>
                     </div>

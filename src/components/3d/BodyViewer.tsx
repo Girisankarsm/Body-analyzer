@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import type { MorphTargets } from '@/components/3d/BodyModel3D';
 
 const BodyModel3D = dynamic(() => import('@/components/3d/BodyModel3D'), {
   ssr: false,
@@ -15,11 +16,20 @@ const BodyModel3D = dynamic(() => import('@/components/3d/BodyModel3D'), {
   ),
 });
 
-interface BodyViewerProps {
-  gender: 'male' | 'female';
-  color: string;
+export interface BodyViewerProps {
+  gender:       'male' | 'female';
+  color:        string;
+  morph?:       MorphTargets;
+  heatmapMode?: boolean;
 }
 
-export default function BodyViewer({ gender, color }: BodyViewerProps) {
-  return <BodyModel3D gender={gender} color={color} />;
+export default function BodyViewer({ gender, color, morph, heatmapMode }: BodyViewerProps) {
+  return (
+    <BodyModel3D
+      gender={gender}
+      color={color}
+      morph={morph}
+      heatmapMode={heatmapMode}
+    />
+  );
 }

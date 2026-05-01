@@ -93,6 +93,25 @@ export interface ScanResults {
   bodyComposition: BodyComposition;
   mlAnalysis?: MLAnalysis;
   regionalFat?: RegionalFat;
+  morphTargets?: {
+    morph_scales: {
+      torso: number;
+      belly: number;
+      chest: number;
+      hips:  number;
+      arms:  number;
+      legs:  number;
+    };
+    heatmap: {
+      abdomen: number;
+      chest:   number;
+      back:    number;
+      arms:    number;
+      thighs:  number;
+      calves:  number;
+    };
+    overall_fatness: number;
+  };
   scanDate: string;
 }
 
@@ -298,14 +317,9 @@ function round(n: number, d: number): number {
   return parseFloat(n.toFixed(d));
 }
 
-export function getModelColor(bfStatus: string): string {
-  switch (bfStatus) {
-    case 'LOW':   return '#4ade80';
-    case 'NORMAL': return '#86efac';
-    case 'HIGH':  return '#fcd34d';
-    case 'OBESE': return '#f87171';
-    default:      return '#4ade80';
-  }
+export function getModelColor(_bfStatus: string): string {
+  // Always return a natural warm skin tone — status colors are shown in the heatmap only
+  return '#c8956c';
 }
 
 export function getStatusColor(status: string): string {
