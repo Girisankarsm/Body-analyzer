@@ -1,121 +1,106 @@
-<div align="center">
+# BodyAnalyzer — AI-Powered Body Composition Analyzer
 
-# Body Analyzer
-
-**AI-powered body composition analysis with 3D visualization**
-
-[![Next.js](https://img.shields.io/badge/Next.js-14-black?style=flat-square&logo=next.js)](https://nextjs.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python)](https://www.python.org)
-[![TailwindCSS](https://img.shields.io/badge/TailwindCSS-3-06B6D4?style=flat-square&logo=tailwindcss)](https://tailwindcss.com)
-
-Upload a photo, enter your measurements — get a full body composition report with a 3D heatmap model, nutrition plan, and ML-powered health insights.
-
-</div>
-
----
-
-## What It Does
-
-Body Analyzer combines computer vision, the US Navy body fat formula, and a trained neural network to estimate your body composition from a single photo. Results are visualized on an interactive 3D model and broken down across four pages — all behind secure Google login.
-
----
-
-## App Flow
-
-```
-Google Login  →  Body Scan Input  →  Dashboard  →  Insights  →  Analytics
-     🔐               📸                 🧍             🥗             🧠
-  Sign in with    Height/weight/     3D model +     Nutrition &    ML engine +
-  Google OAuth    image upload       live metrics   exercise plan  organ risk
-```
+An AI-powered full-stack web application that analyzes body composition from a single photo using ensemble machine learning, CNN deep learning, and clinically validated formulas — trained on real NHANES DEXA data.
 
 ---
 
 ## Features
 
-| Page | What you get |
-|---|---|
-| **Login** | Secure Google OAuth sign-in |
-| **Scan** | Upload photo + enter height, weight, age, gender |
-| **Dashboard** | Interactive 3D body model with heatmap, BMI, body fat %, lean mass, health score |
-| **Insights** | Personalized nutrition plan, exercise protocol, TDEE, hydration target, BMR |
-| **Analytics** | Organ risk indicators, live ML training console, regional fat distribution |
+- **Google OAuth Login** — secure sign-in with profile persistence
+- **Body Scan** — upload a photo + enter height/weight/age/gender
+- **AI Analysis** — ensemble ML (MLP + GBR + ETR) trained on 9,549 real NHANES DEXA participants
+- **CNN Image Model** — MobileNetV2 extracts body features from the uploaded photo
+- **3D Body Model** — GLB model with per-region fat heatmap (abdomen, chest, back, arms, thighs, calves)
+- **Body Shape Morphing** — 3D model morphs based on body proportions
+- **Dashboard** — body fat %, BMI, visceral fat, metabolic age, body composition donut chart
+- **Insights** — nutrition plan, exercise protocol, advanced estimations
+- **Analytics** — deep ML prediction engine, organ risk, biological age
 
-### ML Pipeline
+---
 
-1. Image decoded and processed with **OpenCV** contour detection
-2. Body measurements estimated (neck, waist, hip widths)
-3. **US Navy body fat formula** applied for base prediction
-4. **scikit-learn MLPRegressor** (128→64→32) refines the estimate
-5. Results include confidence score, regional fat breakdown, and anomaly flags
+## Tech Stack
+
+### Frontend
+| Technology | Purpose |
+|-----------|---------|
+| Next.js 14 (App Router) | React framework |
+| React Three Fiber + Three.js | 3D GLB model rendering |
+| TailwindCSS | Styling |
+| Framer Motion | Animations |
+| Recharts | Data charts |
+| NextAuth.js v4 | Google OAuth |
+
+### Backend
+| Technology | Purpose |
+|-----------|---------|
+| FastAPI + Uvicorn | REST API |
+| scikit-learn | Ensemble ML (MLP + GBR + ETR) |
+| PyTorch + MobileNetV2 | CNN image model |
+| OpenCV + MediaPipe | Body measurement extraction |
+| NHANES 2013–2018 | Real DEXA body composition data |
+| pandas + numpy | Data processing |
 
 ---
 
 ## Project Structure
 
 ```
-Body-analyzer/
-├── run.sh                          # ← start everything with one command
-├── .env.example                    # ← copy to .env.local and fill in secrets
-├── README.md
+analyzer/
+├── backend/                    # Python FastAPI ML backend
+│   ├── app/
+│   │   ├── main.py             # FastAPI routes + lifespan
+│   │   ├── analyzer.py         # Core body analysis pipeline
+│   │   ├── train_model.py      # Tabular ensemble training
+│   │   ├── nhanes_loader.py    # NHANES dataset loader
+│   │   └── image_model.py      # CNN image model (MobileNetV2)
+│   ├── data/
+│   │   └── nhanes/             # NHANES XPT files (auto-downloaded)
+│   ├── model/                  # Trained models (auto-generated)
+│   ├── requirements.txt
+│   └── start.sh
+│
+├── src/                        # Next.js frontend
+│   ├── app/
+│   │   ├── login/              # Google OAuth login page
+│   │   ├── scan/               # Input form + image upload
+│   │   ├── dashboard/          # 3D model + body composition
+│   │   ├── insights/           # Nutrition + exercise plans
+│   │   ├── analytics/          # Deep ML prediction engine
+│   │   └── api/auth/           # NextAuth route handler
+│   ├── components/
+│   │   ├── 3d/                 # BodyModel3D + BodyViewer (R3F)
+│   │   └── ui/                 # Nav, shared UI components
+│   ├── context/
+│   │   ├── ScanContext.tsx     # Global scan state + history
+│   │   └── AuthProvider.tsx    # NextAuth session provider
+│   ├── lib/
+│   │   ├── metrics.ts          # Body composition calculations
+│   │   ├── backendApi.ts       # FastAPI client
+│   │   └── auth.ts             # NextAuth config
+│   └── middleware.ts           # Route protection
 │
 ├── public/
-│   └── models/
-│       ├── male.glb                # 3D male body model
-│       └── female.glb              # 3D female body model
+│   └── models/                 # GLB 3D body models
+│       ├── male.glb
+│       └── female.glb
 │
-├── backend/                        # Python FastAPI ML service
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py                 # API endpoints (/analyze, /train/stream, /health)
-│   │   ├── analyzer.py             # OpenCV analysis + Navy formula + MLP inference
-│   │   └── train_model.py          # Synthetic data generation + MLP training
-│   ├── model/                      # bf_model.pkl (auto-generated on first run)
-│   ├── requirements.txt
-│   └── start.sh                    # Start backend only
+├── docs/                       # Project documentation
+│   ├── architecture.jpg        # System architecture diagram
+│   └── test-cases.xlsx         # Functional test cases
 │
-└── src/                            # Next.js 14 App Router frontend
-    ├── middleware.ts                # Protects /scan /dashboard /insights /analytics
-    ├── app/
-    │   ├── page.tsx                 # Root redirect (login or scan)
-    │   ├── layout.tsx               # Providers: Auth + Scan context
-    │   ├── globals.css
-    │   ├── login/page.tsx           # Google sign-in page
-    │   ├── scan/page.tsx            # Input form + analysis trigger
-    │   ├── dashboard/page.tsx       # 3D model + metrics
-    │   ├── insights/page.tsx        # Nutrition & exercise
-    │   ├── analytics/page.tsx       # ML console + risk prediction
-    │   └── api/auth/[...nextauth]/  # NextAuth.js handler
-    ├── components/
-    │   ├── 3d/
-    │   │   ├── BodyModel3D.tsx      # Three.js canvas + GLB loader
-    │   │   └── BodyViewer.tsx       # Dynamic import wrapper (no SSR)
-    │   └── ui/
-    │       └── Nav.tsx              # Top navigation bar
-    ├── context/
-    │   ├── AuthProvider.tsx         # NextAuth SessionProvider wrapper
-    │   └── ScanContext.tsx          # Scan results + localStorage persistence
-    └── lib/
-        ├── auth.ts                  # NextAuth config (Google provider)
-        ├── backendApi.ts            # FastAPI HTTP client
-        └── metrics.ts               # BMI, BMR, lean mass, score calculations
+├── scripts/                    # ML training utilities
+│   └── README.md
+│
+├── run.sh                      # Start all services
+├── .env.example                # Environment variable template
+└── README.md
 ```
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-- **Node.js** 18+ — [nodejs.org](https://nodejs.org)
-- **Python** 3.10+ — [python.org](https://www.python.org)
-- **Google OAuth credentials** — [console.cloud.google.com](https://console.cloud.google.com)
-
----
-
-### 1. Clone
+### 1. Clone the repo
 
 ```bash
 git clone https://github.com/Girisankarsm/Body-analyzer.git
@@ -128,110 +113,89 @@ cd Body-analyzer
 cp .env.example .env.local
 ```
 
-Open `.env.local` and fill in:
+Edit `.env.local`:
 
 ```env
-GOOGLE_CLIENT_ID=your_client_id
-GOOGLE_CLIENT_SECRET=your_client_secret
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+NEXTAUTH_SECRET=any_random_secret_string
 NEXTAUTH_URL=http://localhost:3001
-NEXTAUTH_SECRET=<run: openssl rand -base64 32>
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 ```
 
-### 3. Configure Google OAuth
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com) → **APIs & Services** → **Credentials**
-2. Create an **OAuth 2.0 Client ID** (Web application)
-3. Add this to **Authorized redirect URIs**:
-   ```
-   http://localhost:3001/api/auth/callback/google
-   ```
-4. Copy the Client ID and Secret into `.env.local`
-
-### 4. Run
+### 3. Run everything
 
 ```bash
 bash run.sh
 ```
 
-Open **http://localhost:3001** in your browser.
+This will:
+- Create Python venv and install dependencies
+- Download NHANES dataset from CDC (first run, ~50MB)
+- Train the ML ensemble model
+- Start FastAPI backend on port 8000
+- Install npm packages and start Next.js on port 3001
 
-> On first run, this installs all dependencies and trains the ML model (~5 seconds). Subsequent starts are instant.
+### 4. Open the app
 
----
-
-## Running Services Individually
-
-**Backend only** (FastAPI on port 8000):
-```bash
-cd backend
-bash start.sh
-```
-
-**Frontend only** (Next.js on port 3001):
-```bash
-npm install
-npm run dev
-```
-
-**API docs** (Swagger UI):
-```
-http://localhost:8000/docs
-```
+| Service | URL |
+|---------|-----|
+| App | http://localhost:3001 |
+| API | http://localhost:8000 |
+| API Docs | http://localhost:8000/docs |
 
 ---
 
-## Tech Stack
+## ML Model Performance
 
-### Frontend
+Trained on **9,549 real NHANES DEXA participants** (2013–2018) + 15,451 NHANES-calibrated synthetic samples:
 
-| Technology | Purpose |
-|---|---|
-| Next.js 14 (App Router) | Framework, routing, SSR |
-| TypeScript | Type safety |
-| TailwindCSS | Styling |
-| React Three Fiber + Drei | 3D GLB rendering |
-| Three.js | WebGL / 3D engine |
-| Recharts | Charts and sparklines |
-| Framer Motion | Animations |
-| NextAuth.js v4 | Google OAuth authentication |
-| Lucide React | Icons |
+| Output | R² | MAE |
+|--------|----|-----|
+| Body Fat % | **0.944** | 1.68% |
+| Trunk Fat % | **0.904** | 1.87% |
+| Appendicular Fat % | **0.959** | 0.87% |
+| Visceral Level (1–12) | **0.924** | 0.44 |
 
-### Backend
-
-| Technology | Purpose |
-|---|---|
-| FastAPI | REST API + streaming endpoints |
-| OpenCV | Image processing, contour detection |
-| scikit-learn | MLPRegressor neural network |
-| NumPy | Numerical computations |
-| Joblib | Model serialization |
-| Uvicorn | ASGI server |
+5-fold cross-validation R² = **0.945 ± 0.005**
 
 ---
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `GOOGLE_CLIENT_ID` | Yes | From Google Cloud Console |
-| `GOOGLE_CLIENT_SECRET` | Yes | From Google Cloud Console |
-| `NEXTAUTH_URL` | Yes | App base URL (e.g. `http://localhost:3001`) |
-| `NEXTAUTH_SECRET` | Yes | Random string — `openssl rand -base64 32` |
-| `NEXT_PUBLIC_BACKEND_URL` | No | ML backend URL (default: `http://localhost:8000`) |
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `NEXTAUTH_SECRET` | Random string for session encryption |
+| `NEXTAUTH_URL` | Frontend URL (default: http://localhost:3001) |
+| `NEXT_PUBLIC_BACKEND_URL` | Backend API URL (default: http://localhost:8000) |
 
 ---
 
-## API Endpoints
+## App Flow
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `POST` | `/analyze` | Analyze body composition from image + biometrics |
-| `GET` | `/train/stream` | Stream live ML training epoch logs (SSE) |
-| `GET` | `/model/status` | Check if ML model is trained and ready |
+```
+Login (Google OAuth)
+        ↓
+New Scan (height, weight, age, gender, photo)
+        ↓
+AI Analysis (OpenCV + MediaPipe + Ensemble ML + CNN)
+        ↓
+Dashboard (3D model with fat heatmap + body composition)
+        ↓
+Insights (nutrition plan, exercise protocol)
+        ↓
+Analytics (deep ML engine, biological age, organ risk)
+```
 
 ---
 
-## License
+## Documentation
 
-MIT
+| File | Description |
+|------|-------------|
+| [`docs/architecture.jpg`](docs/architecture.jpg) | System architecture diagram |
+| [`docs/test-cases.xlsx`](docs/test-cases.xlsx) | Functional test cases |
+| [`backend/README.md`](backend/README.md) | Backend ML pipeline details |
+| [`scripts/README.md`](scripts/README.md) | ML training scripts |

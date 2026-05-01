@@ -16,6 +16,7 @@ build/
 # Python
 backend/venv/
 backend/__pycache__/
+backend/app/__pycache__/
 backend/model/
 backend/data/nhanes/*.XPT
 backend/data/nhanes/*.xpt
@@ -24,6 +25,10 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+
+# Scripts (copies of backend files — auto-generated)
+scripts/train_tabular_model.py
+scripts/train_image_model.py
 
 # Logs
 *.log
