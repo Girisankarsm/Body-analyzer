@@ -154,6 +154,18 @@ export default function ScanPage() {
         else              results.bfStatus = 'OBESE';
       }
 
+      // Confidence interval from ensemble uncertainty
+      if (backendData.confidence_interval) {
+        results.bodyFatCILow   = backendData.confidence_interval.low;
+        results.bodyFatCIHigh  = backendData.confidence_interval.high;
+        results.bodyFatStd     = backendData.confidence_interval.std;
+      }
+      if (backendData.model_info) {
+        results.modelR2         = backendData.model_info.r2;
+        results.modelCvMae      = backendData.model_info.cv_mae;
+        results.modelDataSource = backendData.model_info.data_source;
+      }
+
       results.mlAnalysis = {
         source:                backendData.source,
         confidence:            backendData.confidence,

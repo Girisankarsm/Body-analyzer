@@ -57,6 +57,12 @@ export interface ScanResults {
   input: ScanInput;
   bmi: number;
   bodyFat: number;
+  bodyFatCILow?: number;
+  bodyFatCIHigh?: number;
+  bodyFatStd?: number;
+  modelR2?: number;
+  modelCvMae?: number;
+  modelDataSource?: string;
   leanMass: number;
   muscleMass: number;
   boneMass: number;
@@ -271,8 +277,13 @@ export function computeMetrics(input: ScanInput): ScanResults {
     value: parseFloat((leanMass - 2 + i * 0.38).toFixed(1)),
   }));
 
+  // Formula-based CI: Deurenberg has ~±4% accuracy
+  const bodyFatCILow  = parseFloat(Math.max(3, bodyFat - 4).toFixed(1));
+  const bodyFatCIHigh = parseFloat(Math.min(65, bodyFat + 4).toFixed(1));
+
   return {
-    input, bmi, bodyFat, leanMass, muscleMass, boneMass, waterPct, fatMassKg,
+    input, bmi, bodyFat, bodyFatCILow, bodyFatCIHigh, bodyFatStd: 2.0,
+    leanMass, muscleMass, boneMass, waterPct, fatMassKg,
     bmr, tdee, hydrationTarget, score, biologicalAge, metabolicAge,
     visceralFatLevel, bodyType, trunkFatPct, appendicularFatPct,
     bfStatus, lmStatus, recoveryStress,

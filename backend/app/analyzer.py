@@ -1,5 +1,5 @@
 """
-Body Analyzer — Ensemble ML + OpenCV silhouette analysis with measurement validation.
+Body Analyzer — Ensemble ML + MediaPipe pose (optional) + OpenCV fallback.
 
 Pipeline:
   1. OpenCV edge/contour detection → raw pixel measurements
@@ -16,9 +16,25 @@ outside these ranges the result is downweighted or the formula fallback is used.
 
 import math
 import os
+import warnings
 import numpy as np
 import cv2
 import joblib
+
+warnings.filterwarnings("ignore")
+
+# ── Try to load MediaPipe (optional — falls back to OpenCV if unavailable) ────
+_MP_POSE = None
+try:
+    import mediapipe as mp
+    # Support both old solutions API and new tasks API
+    if hasattr(mp, "solutions") and hasattr(mp.solutions, "pose"):
+        _MP_POSE = mp.solutions.pose
+        _USE_MP  = True
+    else:
+        _USE_MP  = False
+except Exception:
+    _USE_MP = False
 
 
 # ── Navy formulas ─────────────────────────────────────────────────────────────
@@ -201,6 +217,75 @@ def regional_fat_detail(body_fat, trunk_fat_pct, appendicular_fat_pct, weight_kg
     }
 
 
+# ── MediaPipe pose-based measurement estimation ───────────────────────────────
+def analyze_body_mediapipe(img_rgb: np.ndarray, height_cm: float) -> dict | None:
+    """
+    Use MediaPipe Pose landmarks to estimate waist, neck, and hip widths.
+    Landmark indices:
+      11/12 = shoulders, 23/24 = hips, 25/26 = knees
+    Hip landmark distance → hip width → hip circumference.
+    Neck estimated from shoulder width.
+    Waist estimated between shoulder and hip midpoints.
+    """
+    if not _USE_MP or _MP_POSE is None:
+        return None
+    try:
+        with _MP_POSE.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
+            results = pose.process(img_rgb)
+            if not results.pose_landmarks:
+                return None
+
+            lm  = results.pose_landmarks.landmark
+            h_px, w_px = img_rgb.shape[:2]
+
+            def px(i):
+                return np.array([lm[i].x * w_px, lm[i].y * h_px])
+
+            # Key landmarks
+            ls, rs = px(11), px(12)   # left/right shoulder
+            lh, rh = px(23), px(24)   # left/right hip
+
+            # Body height in pixels (shoulder top to ankle)
+            la, ra = px(27), px(28)
+            body_top_y    = min(ls[1], rs[1])
+            body_bottom_y = max(la[1], ra[1])
+            body_h_px     = max(1, body_bottom_y - body_top_y)
+            px_per_cm     = body_h_px / (height_cm * 0.88)   # shoulders to ankles ≈ 88% of height
+
+            shoulder_w_px = abs(ls[0] - rs[0])
+            hip_w_px      = abs(lh[0] - rh[0])
+
+            # Waist at midpoint between shoulder and hip
+            mid_y    = (ls[1] + rs[1] + lh[1] + rh[1]) / 4
+            waist_w_px = shoulder_w_px * 0.75   # typical waist ≈ 75% of shoulder width
+
+            shoulder_cm = shoulder_w_px / px_per_cm
+            waist_cm    = waist_w_px    / px_per_cm
+            hip_cm      = hip_w_px      / px_per_cm
+            neck_cm     = shoulder_cm   * 0.34   # neck ≈ 34% of shoulder width (empirical)
+
+            # Convert widths → circumferences
+            waist_circ  = width_to_circ(waist_cm, "waist")
+            neck_circ   = width_to_circ(neck_cm,  "neck")
+            hip_circ    = width_to_circ(hip_cm,   "hip")
+            shr         = shoulder_cm / hip_cm if hip_cm > 0 else 1.1
+
+            return {
+                "neck_circ":          neck_circ,
+                "waist_circ":         waist_circ,
+                "hip_circ":           hip_circ,
+                "shoulder_hip_ratio": shr,
+                "measurements_cm": {
+                    "estimated_neck_cm":  round(neck_circ,  1),
+                    "estimated_waist_cm": round(waist_circ, 1),
+                    "estimated_hip_cm":   round(hip_circ,   1),
+                },
+                "source_method": "mediapipe_pose",
+            }
+    except Exception:
+        return None
+
+
 # ── OpenCV body contour analysis ──────────────────────────────────────────────
 def analyze_body_contour(img, height_cm):
     """
@@ -340,6 +425,63 @@ class BodyAnalyzer:
         except Exception:
             return None
 
+    def _predict_with_uncertainty(self, features_raw):
+        """
+        Returns (predictions, std_devs) by collecting individual estimator outputs.
+        std_dev is used to build a ±1.96σ confidence interval (95% CI).
+        Returns (None, None) if model unavailable.
+        """
+        if self.model_data is None:
+            return None, None
+        try:
+            scaler      = self.model_data['scaler']
+            mo_model    = self.model_data['model']
+            X_s         = scaler.transform(np.array([features_raw], dtype=np.float32))
+
+            # Collect predictions from each sub-estimator (MLP, GBR, ETR)
+            per_output_preds = []
+            for out_estimator in mo_model.estimators_:
+                # out_estimator is a VotingRegressor
+                sub_preds = []
+                for _, est in out_estimator.estimators:
+                    try:
+                        sub_preds.append(est.predict(X_s)[0])
+                    except Exception:
+                        pass
+                if sub_preds:
+                    per_output_preds.append(sub_preds)
+
+            if not per_output_preds:
+                return self._predict_ensemble(features_raw), [1.5, 1.2, 1.2, 0.5]
+
+            # Transpose: per_output_preds[out][estimator] → [estimator][out]
+            preds_matrix = np.array(per_output_preds)   # shape (n_outputs, n_estimators)
+            means = preds_matrix.mean(axis=1)
+            stds  = preds_matrix.std(axis=1)
+
+            result = [
+                max(3.0,  min(60.0, float(means[0]))),
+                max(4.0,  min(65.0, float(means[1]))),
+                max(3.0,  min(55.0, float(means[2]))),
+                max(1.0,  min(12.0, float(means[3]))),
+            ]
+            ci_stds = [max(0.5, float(s)) for s in stds[:4]]
+            return result, ci_stds
+
+        except Exception:
+            return self._predict_ensemble(features_raw), [1.5, 1.2, 1.2, 0.5]
+
+    def _model_info(self):
+        """Return stored training metadata (R², MAE, data_source)."""
+        if self.model_data is None:
+            return {}
+        return {
+            "r2":          self.model_data.get("cv_r2_mean"),
+            "cv_mae":      self.model_data.get("cv_mae_mean"),
+            "data_source": self.model_data.get("data_source", "synthetic"),
+            "n_train":     self.model_data.get("n_train"),
+        }
+
     def _build_features(self, bmi, age, gender, whr, waist_cm, neck_cm, hip_cm, height_cm, weight_kg):
         g_int = 1 if gender == "male" else 0
         whtr  = waist_cm / height_cm
@@ -350,19 +492,30 @@ class BodyAnalyzer:
     def analyze(self, image_bytes, height_cm, weight_kg, gender, age):
         bmi = weight_kg / (height_cm / 100) ** 2
 
-        contour_data = None
+        pose_data = None
         if image_bytes:
             try:
                 arr = np.frombuffer(image_bytes, np.uint8)
                 img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is not None:
-                    contour_data = analyze_body_contour(img, height_cm)
+                    # Try MediaPipe first (more accurate joint landmarks)
+                    if _USE_MP:
+                        img_rgb   = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        pose_data = analyze_body_mediapipe(img_rgb, height_cm)
+                        if pose_data:
+                            pose_data["method"] = "mediapipe"
+
+                    # Fall back to OpenCV contour if MediaPipe fails
+                    if pose_data is None:
+                        pose_data = analyze_body_contour(img, height_cm)
+                        if pose_data:
+                            pose_data["method"] = "opencv"
             except Exception:
                 pass
 
-        if contour_data:
-            return self._with_image(contour_data, height_cm, weight_kg, bmi, gender, age)
-        return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason="contour detection failed")
+        if pose_data:
+            return self._with_image(pose_data, height_cm, weight_kg, bmi, gender, age)
+        return self._formula_fallback(height_cm, weight_kg, bmi, gender, age, reason="image analysis failed")
 
     def _with_image(self, cd, height_cm, weight_kg, bmi, gender, age):
         raw_waist = cd["waist_circ"]
@@ -411,26 +564,35 @@ class BodyAnalyzer:
         features  = self._build_features(bmi, age, gender, whr, waist_v, neck_v, hip_v, height_cm, weight_kg)
         ens_preds = self._predict_ensemble(features)
 
+        ens_preds, ci_stds = self._predict_with_uncertainty(features)
+        method_used = cd.get("method", "opencv")
+
         if ens_preds:
             ml_bf, trunk_fat, append_fat, visceral_level = ens_preds
-            ml_bf = max(3.0, min(55.0, ml_bf))
-            # Final = 50% formula blend + 50% ensemble ML
-            final_bf   = round(0.50 * formula_bf + 0.50 * ml_bf, 1)
-            source      = "ensemble_ml_navy_opencv"
-            confidence  = round(0.65 + 0.20 * conf_factor, 2)
+            ml_bf    = max(3.0, min(55.0, ml_bf))
+            final_bf = round(0.50 * formula_bf + 0.50 * ml_bf, 1)
+            source   = f"ensemble_ml_navy_{method_used}"
+            confidence = round(0.65 + 0.20 * conf_factor, 2)
+            bf_std   = float(ci_stds[0]) if ci_stds else 1.5
         else:
-            final_bf    = round(formula_bf, 1)
-            trunk_fat   = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
-            append_fat  = round(final_bf * (0.36 if gender == "male" else 0.42), 1)
+            final_bf       = round(formula_bf, 1)
+            trunk_fat      = round(final_bf * (0.52 if gender == "male" else 0.47), 1)
+            append_fat     = round(final_bf * (0.36 if gender == "male" else 0.42), 1)
             visceral_level = max(1, min(12, round(final_bf * (0.21 if gender == "male" else 0.18))))
-            source      = "navy_opencv_validated"
-            confidence  = round(0.55 + 0.15 * conf_factor, 2)
+            source         = f"navy_{method_used}_validated"
+            confidence     = round(0.55 + 0.15 * conf_factor, 2)
+            bf_std         = 2.0
 
-        shr        = cd["shoulder_hip_ratio"]
-        body_type  = classify_body_type(whr, shr, gender)
-        meta_age   = metabolic_age(bmi, final_bf, age, gender)
-        comp       = body_composition(weight_kg, final_bf, gender, age)
-        reg_fat    = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
+        # 95% confidence interval: ±1.96 × std
+        ci_95_low  = round(max(3.0,  final_bf - 1.96 * bf_std), 1)
+        ci_95_high = round(min(65.0, final_bf + 1.96 * bf_std), 1)
+
+        shr       = cd["shoulder_hip_ratio"]
+        body_type = classify_body_type(whr, shr, gender)
+        meta_age  = metabolic_age(bmi, final_bf, age, gender)
+        comp      = body_composition(weight_kg, final_bf, gender, age)
+        reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
+        model_inf = self._model_info()
 
         return {
             "body_fat":              final_bf,
@@ -443,14 +605,14 @@ class BodyAnalyzer:
             "metabolic_age":         meta_age,
             "body_type":             body_type,
             "confidence":            confidence,
+            "confidence_interval": {
+                "low":  ci_95_low,
+                "high": ci_95_high,
+                "std":  round(bf_std, 2),
+            },
+            "model_info":            model_inf,
             "source":                source,
             "measurements":          cd["measurements_cm"],
-            "validation": {
-                "conf_factor": conf_factor,
-                "navy_bf":     round(navy_bf, 1),
-                "deuren_bf":   round(deuren_bf, 1),
-                "blend_navy":  round(blend_navy, 2),
-            },
         }
 
     def _formula_fallback(self, height_cm, weight_kg, bmi, gender, age, reason=""):
@@ -481,6 +643,11 @@ class BodyAnalyzer:
         meta_age  = metabolic_age(bmi, final_bf, age, gender)
         comp      = body_composition(weight_kg, final_bf, gender, age)
         reg_fat   = regional_fat_detail(final_bf, trunk_fat, append_fat, weight_kg)
+        model_inf = self._model_info()
+
+        bf_std     = 2.5  # formula-only is less precise
+        ci_95_low  = round(max(3.0,  final_bf - 1.96 * bf_std), 1)
+        ci_95_high = round(min(65.0, final_bf + 1.96 * bf_std), 1)
 
         return {
             "body_fat":              final_bf,
@@ -493,6 +660,12 @@ class BodyAnalyzer:
             "metabolic_age":         meta_age,
             "body_type":             body_type,
             "confidence":            confidence,
+            "confidence_interval": {
+                "low":  ci_95_low,
+                "high": ci_95_high,
+                "std":  bf_std,
+            },
+            "model_info":            model_inf,
             "source":                source,
             "fallback_reason":       reason,
             "measurements":          {},

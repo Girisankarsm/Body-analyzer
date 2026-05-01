@@ -29,6 +29,17 @@ export interface BackendAnalysisResult {
   metabolic_age: number;
   body_type: string;
   body_composition: BackendBodyComposition;
+  confidence_interval: {
+    low: number;
+    high: number;
+    std: number;
+  };
+  model_info?: {
+    r2?: number;
+    cv_mae?: number;
+    data_source?: string;
+    n_train?: number;
+  };
   measurements: {
     estimated_neck_cm?: number;
     estimated_waist_cm?: number;

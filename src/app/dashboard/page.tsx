@@ -438,20 +438,43 @@ export default function DashboardPage() {
             ))}
           </motion.div>
 
-          {/* ML source badge */}
-          {results.mlAnalysis && (
-            <motion.div
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-              style={{ background: 'rgba(74,222,128,0.05)', border: '1px solid rgba(74,222,128,0.1)' }}
-            >
+          {/* ML confidence interval + R² badge */}
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
+            className="rounded-xl px-3 py-2.5"
+            style={{ background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.12)' }}
+          >
+            <div className="flex items-center gap-2 mb-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
-              <span className="text-zinc-500">
-                ML: <span className="text-green-400">{results.mlAnalysis.source}</span>
-                {' '}· {Math.round(results.mlAnalysis.confidence * 100)}% confidence
+              <span className="text-zinc-400 text-xs font-medium">
+                {results.bodyFatCILow !== undefined
+                  ? `Body Fat: ${results.bodyFat}% (95% CI: ${results.bodyFatCILow}–${results.bodyFatCIHigh}%)`
+                  : `Body Fat: ${results.bodyFat}%`}
               </span>
-            </motion.div>
-          )}
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              {results.mlAnalysis && (
+                <span className="text-zinc-600 text-[10px]">
+                  {Math.round((results.mlAnalysis.confidence ?? 0.7) * 100)}% confidence
+                </span>
+              )}
+              {results.modelR2 !== undefined && (
+                <span className="text-zinc-600 text-[10px]">
+                  R²={results.modelR2.toFixed(3)}
+                </span>
+              )}
+              {results.modelCvMae !== undefined && (
+                <span className="text-zinc-600 text-[10px]">
+                  CV-MAE={results.modelCvMae.toFixed(2)}%
+                </span>
+              )}
+              {results.modelDataSource && (
+                <span className="text-green-600 text-[10px]">
+                  {results.modelDataSource.includes("nhanes_real") ? "NHANES real data" : "synthetic"}
+                </span>
+              )}
+            </div>
+          </motion.div>
         </div>
 
         {/* ── Right: 3D Model ─────────────────────────────────── */}
