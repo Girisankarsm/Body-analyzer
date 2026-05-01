@@ -458,14 +458,14 @@ export default function DashboardPage() {
                   {Math.round((results.mlAnalysis.confidence ?? 0.7) * 100)}% confidence
                 </span>
               )}
-              {results.modelR2 !== undefined && (
+              {results.modelR2 != null && (
                 <span className="text-zinc-600 text-[10px]">
-                  R²={results.modelR2.toFixed(3)}
+                  R²={Number(results.modelR2).toFixed(3)}
                 </span>
               )}
-              {results.modelCvMae !== undefined && (
+              {results.modelCvMae != null && (
                 <span className="text-zinc-600 text-[10px]">
-                  CV-MAE={results.modelCvMae.toFixed(2)}%
+                  CV-MAE={Number(results.modelCvMae).toFixed(2)}%
                 </span>
               )}
               {results.modelDataSource && (
