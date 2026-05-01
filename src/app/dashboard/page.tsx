@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import { ExternalLink, TrendingUp, Activity, Zap, Droplets } from 'lucide-react';
+import { Download, ExternalLink, TrendingUp, Activity, Zap, Droplets } from 'lucide-react';
 import Nav from '@/components/ui/Nav';
 import BodyViewer from '@/components/3d/BodyViewer';
 import { useScan } from '@/context/ScanContext';
